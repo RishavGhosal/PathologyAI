@@ -1,0 +1,60 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# Hugging Face credentials/cache and local model weights
+.cache/huggingface/
+.huggingface/
+models/
+checkpoints/
+*.bin
+*.ckpt
+*.onnx
+*.pt
+*.pth
+*.safetensors
+
+# Runtime uploads, generated data, and temporary archives
+uploads/
+outputs/
+data/
+*.zip
+*.tmp
+*.temp
+
+# Local test images that are duplicated or still need reuse verification
+/Figure_3a_H&E_staining_in_NSCLC.tif
+/ihc.png
+/Normal_Epidermis_and_Dermis_with_Intradermal_Nevus_10x.jpg
+/test_images/sources/01_scikit_image_ihc.png
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Streamlit and local logs
+.streamlit/cache/
+*.log
