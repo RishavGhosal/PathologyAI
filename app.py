@@ -20,6 +20,7 @@ from pathology_ai.pipeline import (
     process_uploads,
 )
 from pathology_ai.attention import get_attention_provider
+from pathology_ai.review_export import build_review_export_csv
 from pathology_ai.triage import (
     LOWER_PRIORITY,
     NEEDS_BETTER_IMAGE,
@@ -169,6 +170,7 @@ def _initialize_review_state(batch: BatchResult) -> dict[str, dict[str, object]]
                 record.image_id,
                 {
                     "notes": "",
+                    "group_id": "",
                     "priority": record.triage.suggested_priority,
                     "reviewed": False,
                 },
@@ -176,24 +178,30 @@ def _initialize_review_state(batch: BatchResult) -> dict[str, dict[str, object]]
         )
         priority_key = f"priority_{record.image_id}"
         notes_key = f"notes_{record.image_id}"
+        group_key = f"group_{record.image_id}"
         reviewed_key = f"reviewed_{record.image_id}"
 
         if priority_key in st.session_state and st.session_state[priority_key] in PRIORITIES:
             state["priority"] = st.session_state[priority_key]
         if notes_key in st.session_state:
             state["notes"] = st.session_state[notes_key]
+        if group_key in st.session_state:
+            state["group_id"] = st.session_state[group_key]
         if reviewed_key in st.session_state:
             state["reviewed"] = bool(st.session_state[reviewed_key])
 
         if state.get("priority") not in PRIORITIES:
             state["priority"] = record.triage.suggested_priority
         state.setdefault("notes", "")
+        state.setdefault("group_id", "")
         state.setdefault("reviewed", False)
 
         if priority_key not in st.session_state:
             st.session_state[priority_key] = state["priority"]
         if notes_key not in st.session_state:
             st.session_state[notes_key] = state["notes"]
+        if group_key not in st.session_state:
+            st.session_state[group_key] = state["group_id"]
         if reviewed_key not in st.session_state:
             st.session_state[reviewed_key] = state["reviewed"]
         reviews[record.image_id] = state
@@ -211,6 +219,9 @@ def _sync_selected_review(record_id: str) -> None:
         f"priority_{record_id}", state.get("priority", LOWER_PRIORITY)
     )
     state["notes"] = st.session_state.get(f"notes_{record_id}", state.get("notes", ""))
+    state["group_id"] = st.session_state.get(
+        f"group_{record_id}", state.get("group_id", "")
+    )
     state["reviewed"] = bool(
         st.session_state.get(f"reviewed_{record_id}", state.get("reviewed", False))
     )
@@ -272,7 +283,13 @@ def _render_batch_table(
                 "File type": record.file_type,
                 "Dimensions": f"{record.width} × {record.height} px",
                 "File size": format_file_size(record.size_bytes),
-                "Image Quality": "Adequate" if record.quality.adequate else "Needs attention",
+                "Image Quality": (
+                    "Adequate — advisory"
+                    if record.quality.adequate and record.quality.advisories
+                    else "Adequate"
+                    if record.quality.adequate
+                    else "Needs Better Image"
+                ),
                 "Analysis source": record.attention.provider_name,
                 "Suggested priority": record.triage.suggested_priority,
                 "Current priority": state["priority"],
@@ -353,11 +370,13 @@ def _render_image_detail(record, reviews: dict[str, dict[str, object]]) -> None:
     with quality_column:
         st.markdown("#### Image Quality")
         if record.quality.adequate:
-            st.success("Image passes the MVP quality checks.")
+            st.success("Image passes the blocking MVP quality checks.")
         else:
             st.warning(f"{NEEDS_BETTER_IMAGE}: quality issues were found.")
             for reason in record.quality.reasons:
                 st.write(f"• {reason}")
+        for advisory in record.quality.advisories:
+            st.warning(f"Manual quality advisory: {advisory}")
         with st.expander("Quality check details"):
             st.write(f"Brightness score: {record.quality.metrics['brightness']:.1f} / 255")
             st.write(f"Contrast score: {record.quality.metrics['contrast']:.1f}")
@@ -379,6 +398,16 @@ def _render_image_detail(record, reviews: dict[str, dict[str, object]]) -> None:
         st.caption("Human Review Required • Priority is review order only.")
 
     st.markdown("#### Manual Review")
+    st.text_input(
+        "De-identified slide/case group ID (optional)",
+        key=f"group_{record.image_id}",
+        placeholder="Example: slide-group-001",
+        help=(
+            "Use only a de-identified grouping code for future slide-level train/test "
+            "splits. Do not enter names, medical record numbers, dates of birth, or "
+            "other identifying information."
+        ),
+    )
     st.text_area(
         "Reviewer notes (kept in this browser session)",
         key=f"notes_{record.image_id}",
@@ -405,6 +434,53 @@ def _render_image_detail(record, reviews: dict[str, dict[str, object]]) -> None:
         )
 
 
+def _render_review_export(
+    batch: BatchResult,
+    reviews: dict[str, dict[str, object]],
+    batch_fingerprint: str,
+) -> None:
+    reviewed_count = sum(
+        int(bool(reviews[record.image_id].get("reviewed", False)))
+        for record in batch.records
+    )
+    with st.expander("Export reviewed labels for research training"):
+        st.write(
+            f"Reviewed images in the current batch: **{reviewed_count}**. The CSV "
+            "contains reviewer labels and locally generated UNI embeddings when "
+            "available. It does not contain raw images, filenames, or local paths."
+        )
+        st.warning(
+            "Do not export names, medical record numbers, dates of birth, or other "
+            "identifying information. The downloaded CSV remains on your computer and "
+            "is not encrypted."
+        )
+        confirmation_key = f"export_deidentified_{batch_fingerprint}"
+        confirmed = st.checkbox(
+            "I confirm that reviewer notes and group IDs contain no identifying information.",
+            key=confirmation_key,
+        )
+        try:
+            export_data = build_review_export_csv(batch.records, reviews)
+        except ValueError as exc:
+            st.error(f"The research export could not be prepared: {exc}")
+            return
+        st.download_button(
+            "Download reviewed labels and UNI embeddings (CSV)",
+            data=export_data,
+            file_name=f"pathologyai_review_labels_{batch_fingerprint[:8]}.csv",
+            mime="text/csv",
+            disabled=reviewed_count == 0 or not confirmed,
+            help=(
+                "The export includes only images marked reviewed in the current batch. "
+                "It is for research/education review-priority development only."
+            ),
+        )
+        if reviewed_count == 0:
+            st.caption("Mark at least one image as reviewed before exporting.")
+        elif not confirmed:
+            st.caption("Confirm de-identification before downloading.")
+
+
 def main() -> None:
     st.title("🔬 PathologyAI")
     st.caption("Research/Education Prototype • Review Priority • Human Review Required")
@@ -417,7 +493,7 @@ def main() -> None:
             st.success(uni_status.summary)
             use_uni = st.toggle(
                 "Use local UNI feature visualization",
-                value=False,
+                value=True,
                 help=(
                     "Loads the local ViT-L encoder when an image is processed. CPU "
                     "inference can be slow and uses substantial memory."
@@ -431,7 +507,7 @@ def main() -> None:
                 )
             else:
                 st.write("**Model Attention source:** Deterministic demonstration")
-                st.caption("Enable the toggle to load UNI for uploaded images.")
+                st.caption("UNI was manually disabled for this session.")
         else:
             use_uni = False
             st.warning(uni_status.summary)
@@ -477,7 +553,8 @@ def main() -> None:
         (uploaded.name, uploaded.getvalue(), getattr(uploaded, "type", "") or "")
         for uploaded in uploaded_files
     )
-    st.session_state["active_batch_fingerprint"] = _batch_fingerprint(payload_values)
+    batch_fingerprint = _batch_fingerprint(payload_values)
+    st.session_state["active_batch_fingerprint"] = batch_fingerprint
     with st.spinner("Checking files and preparing review-priority suggestions..."):
         selected_provider_key = (
             uni_status.cache_key if use_uni else "deterministic-demo:v1"
@@ -522,6 +599,7 @@ def main() -> None:
         ),
     )
     _render_image_detail(record_by_id[selected_id], reviews)
+    _render_review_export(batch, reviews, batch_fingerprint)
 
     st.divider()
     st.caption("PathologyAI • Research/Education Prototype • Human Review Required")

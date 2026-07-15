@@ -223,11 +223,28 @@ class QualityAssessmentTests(unittest.TestCase):
     def test_possible_crop_is_detected_conservatively(self) -> None:
         quality = assess_image_quality(_cropped_looking_image())
 
-        self.assertFalse(quality.adequate)
+        self.assertTrue(quality.adequate)
+        self.assertEqual(quality.reasons, ())
         self.assertTrue(
-            any("Possible edge truncation" in reason for reason in quality.reasons),
-            quality.reasons,
+            any("Possible edge truncation" in reason for reason in quality.advisories),
+            quality.advisories,
         )
+
+    def test_normal_skin_fixture_passes_with_nonblocking_crop_advisory(self) -> None:
+        fixture = (
+            Path(__file__).resolve().parents[1]
+            / "test_images"
+            / "sources"
+            / "02_normal_skin_he.jpg"
+        )
+        with Image.open(fixture) as image:
+            quality = assess_image_quality(image.convert("RGB"))
+
+        self.assertTrue(quality.adequate, quality.reasons)
+        self.assertEqual(quality.reasons, ())
+        self.assertTrue(quality.advisories)
+        triage = assign_review_priority(quality, visual_complexity_score=0.10)
+        self.assertEqual(triage.suggested_priority, LOWER_PRIORITY)
 
     def test_inadequate_quality_always_maps_to_needs_better_image(self) -> None:
         quality = assess_image_quality(_small_image())

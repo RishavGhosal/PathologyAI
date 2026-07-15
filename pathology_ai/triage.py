@@ -54,8 +54,9 @@ def assign_review_priority(
     return TriageResult(
         suggested_priority=LOWER_PRIORITY,
         explanation=(
-            "The image passed the quality checks and has less visual variation under the "
-            "deterministic rule. It remains in the queue and still requires human review."
+            "The image passed the blocking image-quality checks and has less visual "
+            "variation under the deterministic rule. It remains in the queue and still "
+            "requires human review."
         ),
         priority_source=priority_source,
     )

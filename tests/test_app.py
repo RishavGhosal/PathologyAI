@@ -74,6 +74,8 @@ class StreamlitAppSmokeTests(unittest.TestCase):
             }
         )
         app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
+        if app.toggle:
+            app.toggle[0].set_value(False)
         app.file_uploader[0].set_value(
             [
                 ("valid.png", valid_png, "image/png"),
@@ -95,6 +97,8 @@ class StreamlitAppSmokeTests(unittest.TestCase):
             {"readme.txt": b"none", "table.csv": b"a,b\n1,2"}
         )
         empty_app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
+        if empty_app.toggle:
+            empty_app.toggle[0].set_value(False)
         empty_app.file_uploader[0].set_value(
             [("no-images.zip", unsupported_zip, "application/zip")]
         )
@@ -108,6 +112,8 @@ class StreamlitAppSmokeTests(unittest.TestCase):
     def test_viewer_configuration_and_manual_review_state(self) -> None:
         valid_png = _image_bytes()
         app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
+        if app.toggle:
+            app.toggle[0].set_value(False)
         app.file_uploader[0].set_value([("valid.png", valid_png, "image/png")])
         app.run()
 
@@ -120,6 +126,7 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         self.assertEqual(figure_spec["layout"]["dragmode"], "pan")
 
         app.text_area[0].input("student review note")
+        app.text_input[0].input("slide-group-001")
         app.selectbox[1].set_value("Lower Priority")
         app.checkbox[0].check()
         app.run()
@@ -129,6 +136,7 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         self.assertEqual(values["Reviewed images"], "1")
         self.assertEqual(values["Lower Priority"], "1")
         self.assertEqual(app.text_area[0].value, "student review note")
+        self.assertEqual(app.text_input[0].value, "slide-group-001")
         self.assertEqual(app.selectbox[1].value, "Lower Priority")
         self.assertTrue(app.checkbox[0].value)
 

@@ -28,6 +28,8 @@ class AttentionResult:
     uses_trained_encoder: bool = False
     priority_score_source: str = "Deterministic visual-complexity heuristic"
     overlay_caption: str = "Deterministic visual-salience demonstration overlay."
+    embedding: tuple[float, ...] | None = None
+    embedding_model: str | None = None
 
 
 class AttentionProvider(Protocol):

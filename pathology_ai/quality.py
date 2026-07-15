@@ -22,6 +22,7 @@ class QualityAssessment:
     adequate: bool
     reasons: tuple[str, ...]
     metrics: dict[str, float]
+    advisories: tuple[str, ...] = ()
 
 
 def _analysis_array(image: Image.Image, max_side: int = 768) -> np.ndarray:
@@ -102,6 +103,7 @@ def assess_image_quality(image: Image.Image) -> QualityAssessment:
     possible_crop, edge_contacts = _possible_edge_truncation(rgb)
 
     reasons: list[str] = []
+    advisories: list[str] = []
     if min(width, height) < MIN_DIMENSION:
         reasons.append(
             f"Very small dimensions ({width} × {height} px); use an image at least "
@@ -121,9 +123,10 @@ def assess_image_quality(image: Image.Image) -> QualityAssessment:
         )
 
     if possible_crop:
-        reasons.append(
+        advisories.append(
             "Possible edge truncation: image content touches multiple frame edges while "
-            "background remains visible. Manual verification is required."
+            "background remains visible. This can be normal for microscopy fields; "
+            "manual verification is recommended."
         )
 
     return QualityAssessment(
@@ -135,4 +138,5 @@ def assess_image_quality(image: Image.Image) -> QualityAssessment:
             "blur_score": blur_score,
             "edge_contacts": float(edge_contacts),
         },
+        advisories=tuple(advisories),
     )

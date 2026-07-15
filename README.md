@@ -57,12 +57,13 @@ UNI is optional. Install the CPU inference packages with:
 ```
 
 Place the gated checkpoint at `models/uni/pytorch_model.bin`. The checkpoint is
-ignored by Git and must not be redistributed. Start the app normally, then use
-the sidebar toggle **Use local UNI feature visualization**. The first enabled
-analysis loads the approximately 1.2 GB ViT-L checkpoint and may be slow or use
-substantial memory on CPU. Systems with a supported NVIDIA GPU should install a
-matching PyTorch build using the official PyTorch selector instead of the CPU
-pins in `requirements-uni.txt`.
+ignored by Git and must not be redistributed. When the checkpoint and optional
+packages are ready, the sidebar toggle **Use local UNI feature visualization**
+is enabled by default. The first analysis loads the approximately 1.2 GB ViT-L
+checkpoint and may be slow or use substantial memory on CPU. The toggle can be
+disabled for the faster deterministic fallback. Systems with a supported NVIDIA
+GPU should install a matching PyTorch build using the official PyTorch selector
+instead of the CPU pins in `requirements-uni.txt`.
 
 ## Publish safely to GitHub
 
@@ -109,8 +110,11 @@ in `THIRD_PARTY_NOTICES.md`; local images with unverified terms are ignored.
 - For a multi-page TIFF, this MVP previews and evaluates the first frame.
 
 The Image Quality checks are conservative presentation checks, not pathology
-findings. Possible cropping is reported only when frame-edge patterns make it
-reasonably detectable, and the message asks for manual verification.
+findings. Corruption, very small dimensions, extreme darkness/brightness,
+blankness, and blur are blocking failures that produce `Needs Better Image`.
+Possible cropping or edge contact is an advisory only because tissue commonly
+touches the edge of a microscopy field; it does not reject an otherwise usable
+image.
 
 ## Model Attention and UNI limitations
 
@@ -139,6 +143,21 @@ available during the current browser session but are not saved to a database,
 written into the source image, exported to an EMR, or shared automatically.
 Starting a new session or clearing Streamlit state removes them.
 
+## Reviewed-label research export
+
+Each image can be assigned an optional de-identified slide/case grouping code,
+reviewer notes, a confirmed/overridden priority, and reviewed status. After at
+least one image is marked reviewed, the export panel can download a CSV for
+future review-priority model development. The CSV includes only reviewed images
+from the current batch, their reviewer labels, quality provenance, and 1,024 UNI
+feature columns when UNI succeeded. It excludes raw images, filenames, upload
+paths, and unreviewed rows.
+
+The reviewer must confirm that notes and grouping codes contain no names,
+medical record numbers, dates of birth, or other identifying information. The
+CSV is local and unencrypted. It is a research/education review-order artifact,
+not a diagnostic dataset.
+
 ## Project layout
 
 - `app.py` - Streamlit interface, dashboard, viewer, and review controls.
@@ -149,6 +168,8 @@ Starting a new session or clearing Streamlit state removes them.
   model-adapter interface.
 - `pathology_ai/uni_provider.py` - optional local UNI loader and exploratory
   feature-variation overlay.
+- `pathology_ai/review_export.py` - reviewed-only, de-identified label and UNI
+  embedding CSV export.
 - `requirements-uni.txt` - optional CPU packages for local UNI inference.
 - `tests/test_pipeline.py` - in-memory upload, failure, ZIP, quality, and label
   tests.

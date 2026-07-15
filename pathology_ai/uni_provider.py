@@ -221,6 +221,7 @@ class LocalUNIFeatureProvider:
 
         with _INFERENCE_LOCK, torch.inference_mode():
             tokens = model.forward_features(tensor)
+            embedding_tensor = model.forward_head(tokens, pre_logits=True).float().cpu()
         if tokens.ndim != 3 or tokens.shape[0] != 1:
             raise RuntimeError("UNI returned an unexpected token tensor.")
         prefix_tokens = int(getattr(model, "num_prefix_tokens", 1))
@@ -234,6 +235,11 @@ class LocalUNIFeatureProvider:
         centroid = torch.nn.functional.normalize(normalized.mean(dim=0, keepdim=True), dim=1)
         scores = 1.0 - torch.sum(normalized * centroid, dim=1)
         patch_scores = scores.reshape(grid_side, grid_side).cpu().numpy()
+        if tuple(embedding_tensor.shape) != (1, UNI_EMBEDDING_DIMENSION):
+            raise RuntimeError("UNI returned an unexpected global embedding shape.")
+        if not bool(torch.isfinite(embedding_tensor).all()):
+            raise RuntimeError("UNI returned a non-finite global embedding.")
+        embedding = tuple(float(value) for value in embedding_tensor[0].tolist())
         overlay, heatmap, region = _render_feature_overlay(
             image, patch_scores, content_box
         )
@@ -260,4 +266,6 @@ class LocalUNIFeatureProvider:
                 "Exploratory local UNI feature-variation overlay; not a diagnostic "
                 "explanation."
             ),
+            embedding=embedding,
+            embedding_model=UNI_MODEL_ID,
         )
