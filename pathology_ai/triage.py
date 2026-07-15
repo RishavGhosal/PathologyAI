@@ -19,11 +19,13 @@ REVIEW_FIRST_COMPLEXITY_THRESHOLD = 0.46
 class TriageResult:
     suggested_priority: str
     explanation: str
+    priority_source: str = "Deterministic visual-complexity heuristic"
 
 
 def assign_review_priority(
     quality: QualityAssessment,
     visual_complexity_score: float,
+    priority_source: str = "Deterministic visual-complexity heuristic",
 ) -> TriageResult:
     """Assign review order only; never a disease or diagnostic category."""
 
@@ -35,24 +37,27 @@ def assign_review_priority(
                 f"A clearer or more complete image is needed before useful review. "
                 f"{joined_reasons}"
             ),
+            priority_source="Image-quality checks",
         )
 
     if visual_complexity_score >= REVIEW_FIRST_COMPLEXITY_THRESHOLD:
         return TriageResult(
             suggested_priority=REVIEW_FIRST,
             explanation=(
-                "The deterministic demonstration found comparatively strong visual "
+                "The deterministic visual-complexity rule found comparatively strong "
                 "texture or contrast, so it places this image earlier in the human-review "
                 "queue. This is a review-order suggestion, not a disease estimate."
             ),
+            priority_source=priority_source,
         )
 
     return TriageResult(
         suggested_priority=LOWER_PRIORITY,
         explanation=(
             "The image passed the quality checks and has less visual variation under the "
-            "demonstration rules. It remains in the queue and still requires human review."
+            "deterministic rule. It remains in the queue and still requires human review."
         ),
+        priority_source=priority_source,
     )
 
 

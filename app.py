@@ -19,6 +19,7 @@ from pathology_ai.pipeline import (
     format_file_size,
     process_uploads,
 )
+from pathology_ai.attention import get_attention_provider
 from pathology_ai.triage import (
     LOWER_PRIORITY,
     NEEDS_BETTER_IMAGE,
@@ -26,6 +27,7 @@ from pathology_ai.triage import (
     REVIEW_FIRST,
     priority_sort_key,
 )
+from pathology_ai.uni_provider import get_uni_provider_status
 
 
 DISCLAIMER = (
@@ -47,12 +49,16 @@ st.set_page_config(
 @st.cache_data(show_spinner=False, max_entries=8)
 def _process_cached(
     payload_values: tuple[tuple[str, bytes, str], ...],
+    provider_cache_key: str,
+    use_uni: bool,
 ) -> BatchResult:
+    del provider_cache_key  # Included so model/checkpoint changes invalidate cached results.
     payloads = [
         UploadPayload(name=name, data=data, mime_type=mime_type)
         for name, data, mime_type in payload_values
     ]
-    return process_uploads(payloads)
+    provider = get_attention_provider(prefer_uni=use_uni)
+    return process_uploads(payloads, provider=provider)
 
 
 def _batch_fingerprint(payload_values: tuple[tuple[str, bytes, str], ...]) -> str:
@@ -267,6 +273,7 @@ def _render_batch_table(
                 "Dimensions": f"{record.width} × {record.height} px",
                 "File size": format_file_size(record.size_bytes),
                 "Image Quality": "Adequate" if record.quality.adequate else "Needs attention",
+                "Analysis source": record.attention.provider_name,
                 "Suggested priority": record.triage.suggested_priority,
                 "Current priority": state["priority"],
                 "Reviewed": "Yes" if state["reviewed"] else "No",
@@ -305,10 +312,20 @@ def _render_image_detail(record, reviews: dict[str, dict[str, object]]) -> None:
     metadata_columns[3].metric("File size", format_file_size(record.size_bytes))
     st.caption(record.display_name)
     for note in record.metadata_notes:
-        st.info(note)
+        if "fallback was used" in note:
+            st.warning(note)
+        else:
+            st.info(note)
 
     st.markdown("#### Original Image and Model Attention")
-    if record.attention.is_demonstration:
+    if record.attention.uses_trained_encoder:
+        st.info(
+            "A local pretrained UNI encoder generated this exploratory feature-variation "
+            "visualization. It is not a validated clinical attention map. No trained "
+            "review-priority classifier is loaded, and UNI did not generate the priority "
+            "label."
+        )
+    elif record.attention.is_demonstration:
         st.info(
             "Deterministic demonstration attention — based on image appearance such as "
             "contrast and edges, not learned pathology features. No trained or validated "
@@ -327,7 +344,7 @@ def _render_image_detail(record, reviews: dict[str, dict[str, object]]) -> None:
         render_image_viewer(
             record.attention.overlay,
             f"attention_{record.image_id}",
-            "Deterministic demonstration overlay.",
+            record.attention.overlay_caption,
         )
     st.markdown(f"**Plain-language explanation:** {record.attention.explanation}")
     _render_original_resolution(record)
@@ -356,6 +373,9 @@ def _render_image_detail(record, reviews: dict[str, dict[str, object]]) -> None:
         st.write(f"**Suggested:** {record.triage.suggested_priority}")
         st.write(f"**Current reviewer choice:** {state['priority']}")
         st.write(record.triage.explanation)
+        st.caption(f"Priority source: {record.triage.priority_source}")
+        if record.attention.uses_trained_encoder:
+            st.caption("UNI did not generate this priority label.")
         st.caption("Human Review Required • Priority is review order only.")
 
     st.markdown("#### Manual Review")
@@ -390,10 +410,34 @@ def main() -> None:
     st.caption("Research/Education Prototype • Review Priority • Human Review Required")
     st.warning(DISCLAIMER)
 
+    uni_status = get_uni_provider_status()
     with st.sidebar:
         st.header("Prototype Status")
-        st.write("**Attention source:** Deterministic demonstration")
-        st.caption("No trained EfficientNet-B0 or PCam model is loaded.")
+        if uni_status.ready:
+            st.success(uni_status.summary)
+            use_uni = st.toggle(
+                "Use local UNI feature visualization",
+                value=False,
+                help=(
+                    "Loads the local ViT-L encoder when an image is processed. CPU "
+                    "inference can be slow and uses substantial memory."
+                ),
+            )
+            if use_uni:
+                st.write("**Model Attention source:** Local UNI encoder")
+                st.caption(
+                    "Exploratory UNI feature variation is enabled. The deterministic "
+                    "rule still supplies review priority."
+                )
+            else:
+                st.write("**Model Attention source:** Deterministic demonstration")
+                st.caption("Enable the toggle to load UNI for uploaded images.")
+        else:
+            use_uni = False
+            st.warning(uni_status.summary)
+            st.caption(uni_status.detail)
+            st.write("**Model Attention source:** Deterministic demonstration")
+        st.caption("No trained review-priority classifier is loaded.")
         if go is None:
             st.warning("Plotly is unavailable; the basic image-viewer fallback is active.")
         else:
@@ -401,7 +445,8 @@ def main() -> None:
         with st.expander("MVP scope and limits"):
             st.write(
                 "Supports PNG, JPG/JPEG, TIFF, and ZIP batches. This MVP does not process "
-                "whole-slide formats, make disease predictions, or download model weights."
+                "whole-slide formats, make disease predictions, or download model weights. "
+                "UNI is used only when its local checkpoint is present and the toggle is on."
             )
 
     st.subheader("Upload Pathology Images")
@@ -434,7 +479,10 @@ def main() -> None:
     )
     st.session_state["active_batch_fingerprint"] = _batch_fingerprint(payload_values)
     with st.spinner("Checking files and preparing review-priority suggestions..."):
-        batch = _process_cached(payload_values)
+        selected_provider_key = (
+            uni_status.cache_key if use_uni else "deterministic-demo:v1"
+        )
+        batch = _process_cached(payload_values, selected_provider_key, use_uni)
 
     reviews = _initialize_review_state(batch)
     _render_dashboard(batch, reviews)

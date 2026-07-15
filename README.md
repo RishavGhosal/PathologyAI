@@ -3,7 +3,8 @@
 PathologyAI is a student-friendly **Research/Education Prototype** for organizing
 pathology images for human review. It validates uploaded images, checks basic
 presentation quality, shows a deterministic demonstration attention map, and
-suggests a review order.
+suggests a review order. When explicitly enabled, it can also use a local UNI
+encoder for an exploratory feature-variation visualization.
 
 > **This research and education prototype provides review-priority suggestions only. It does not provide a medical diagnosis and does not replace review by a qualified pathologist.**
 
@@ -46,6 +47,22 @@ python -m venv venv
 
 The app does not need internet access at runtime and does not download model
 weights.
+
+### Optional local UNI mode
+
+UNI is optional. Install the CPU inference packages with:
+
+```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements-uni.txt
+```
+
+Place the gated checkpoint at `models/uni/pytorch_model.bin`. The checkpoint is
+ignored by Git and must not be redistributed. Start the app normally, then use
+the sidebar toggle **Use local UNI feature visualization**. The first enabled
+analysis loads the approximately 1.2 GB ViT-L checkpoint and may be slow or use
+substantial memory on CPU. Systems with a supported NVIDIA GPU should install a
+matching PyTorch build using the official PyTorch selector instead of the CPU
+pins in `requirements-uni.txt`.
 
 ## Publish safely to GitHub
 
@@ -95,13 +112,21 @@ The Image Quality checks are conservative presentation checks, not pathology
 findings. Possible cropping is reported only when frame-edge patterns make it
 reasonably detectable, and the message asks for manual verification.
 
-## Model Attention demonstration
+## Model Attention and UNI limitations
 
-No trained EfficientNet-B0/PCam pathology model is bundled. The included
-attention view is a repeatable, deterministic visualization based on edges,
-local contrast, and color variation. It is clearly labeled as a demonstration
-and must not be interpreted as a learned pathology finding, cancer prediction,
-or medical conclusion.
+The always-available attention view is a repeatable, deterministic visualization
+based on edges, local contrast, and color variation. The optional local UNI mode
+loads the approved pretrained pathology encoder and compares its patch-token
+representations within a letterboxed 224 × 224 copy of the image. The resulting
+overlay shows relative feature variation in that resized view.
+
+UNI is a feature encoder, not a diagnosis model and not a trained
+review-priority classifier. In this MVP, UNI does **not** generate `Review First`
+or `Lower Priority`; those labels continue to use the documented deterministic
+visual-complexity rule, while `Needs Better Image` comes from image-quality
+checks. The UNI overlay is exploratory and must not be interpreted as a
+validated clinical attention map, pathology finding, cancer prediction, or
+medical conclusion. No weights are downloaded at runtime.
 
 The viewer supports zoom, pan, fit, and reset when its interactive component is
 available, with a built-in static/zoom fallback so image review remains usable.
@@ -122,6 +147,9 @@ Starting a new session or clearing Streamlit state removes them.
 - `pathology_ai/triage.py` - the three review-order labels and sorting rules.
 - `pathology_ai/attention.py` - demonstration attention provider and future
   model-adapter interface.
+- `pathology_ai/uni_provider.py` - optional local UNI loader and exploratory
+  feature-variation overlay.
+- `requirements-uni.txt` - optional CPU packages for local UNI inference.
 - `tests/test_pipeline.py` - in-memory upload, failure, ZIP, quality, and label
   tests.
 - `tests/test_app.py` - Streamlit startup, dashboard, viewer configuration, and
@@ -141,11 +169,11 @@ valid PNG/JPG, an unsupported file (directly or inside a ZIP), a corrupted
 image, a blurry or very small image, a mixed valid/invalid ZIP, and a ZIP with
 no supported images.
 
-## Adding a local model later
+## Adding a review-priority model later
 
-A future reviewed local adapter can implement `AttentionProvider.analyze()` in
-`pathology_ai/attention.py` and be selected by `get_attention_provider()`. An
-ImageNet-pretrained EfficientNet-B0 or locally available PCam-derived model can
-be integrated there without changing the upload or review UI. Keep weights
-local, do not auto-download them, label the model and its limitations clearly,
-and validate it separately before making any performance claim.
+To let UNI influence `Review First` or `Lower Priority`, first train and validate
+a separate downstream review-priority head on appropriate human review-order
+labels, using patient- or slide-level data splits. Keep that head disabled until
+its provenance, threshold, limitations, and evaluation are documented. Raw UNI
+embedding magnitude or an arbitrary threshold is not a valid substitute for a
+trained head.

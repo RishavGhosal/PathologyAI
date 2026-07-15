@@ -1,8 +1,8 @@
 """Explainable visual-attention providers for PathologyAI.
 
-The included provider is a deterministic visual-salience demonstration. A
-future local EfficientNet-B0/PCam adapter can implement ``AttentionProvider``
-and be injected into the processing pipeline without changing the UI.
+The deterministic provider always remains available. A separately installed
+local UNI adapter can provide an exploratory feature-variation visualization,
+but UNI is not a review-priority classifier.
 """
 
 from __future__ import annotations
@@ -25,6 +25,9 @@ class AttentionResult:
     visual_complexity_score: float
     provider_name: str
     is_demonstration: bool
+    uses_trained_encoder: bool = False
+    priority_score_source: str = "Deterministic visual-complexity heuristic"
+    overlay_caption: str = "Deterministic visual-salience demonstration overlay."
 
 
 class AttentionProvider(Protocol):
@@ -152,14 +155,30 @@ class DeterministicDemoAttentionProvider:
             visual_complexity_score=float(np.clip(complexity, 0.0, 1.0)),
             provider_name=DEMO_PROVIDER_NAME,
             is_demonstration=True,
+            uses_trained_encoder=False,
+            priority_score_source="Deterministic visual-complexity heuristic",
+            overlay_caption=(
+                "Deterministic demonstration overlay based on edges, contrast, and "
+                "color variation."
+            ),
         )
 
 
-def get_attention_provider() -> AttentionProvider:
-    """Return the offline provider currently configured for this MVP.
+def get_attention_provider(prefer_uni: bool = False) -> AttentionProvider:
+    """Return a local provider without downloading weights.
 
-    No model weights are downloaded. Replace this factory with a compatible
-    local-model adapter when a reviewed EfficientNet-B0/PCam artifact exists.
+    UNI is opt-in because its ViT-L encoder is large and can be slow on CPU. If
+    the checkpoint or optional packages are unavailable, the deterministic
+    provider keeps the basic application functional.
     """
 
+    if prefer_uni:
+        try:
+            from .uni_provider import LocalUNIFeatureProvider, get_uni_provider_status
+
+            status = get_uni_provider_status()
+            if status.ready:
+                return LocalUNIFeatureProvider(status.checkpoint_path)
+        except Exception:
+            pass
     return DeterministicDemoAttentionProvider()

@@ -7,6 +7,8 @@ repeatable.  ``unittest`` is the only test framework used.
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -17,6 +19,7 @@ from pathology_ai.attention import (
     DEMO_PROVIDER_NAME,
     AttentionResult,
     DeterministicDemoAttentionProvider,
+    get_attention_provider,
 )
 from pathology_ai.pipeline import UploadPayload, process_uploads
 from pathology_ai.quality import QualityAssessment, assess_image_quality
@@ -28,6 +31,7 @@ from pathology_ai.triage import (
     assign_review_priority,
     priority_sort_key,
 )
+from pathology_ai.uni_provider import _letterbox, get_uni_provider_status
 
 
 def _encode_image(image: Image.Image, image_format: str) -> bytes:
@@ -400,6 +404,30 @@ class AttentionAndTriageTests(unittest.TestCase):
         }
 
         self.assertEqual(labels, set(PRIORITIES))
+
+
+class UNIProviderConfigurationTests(unittest.TestCase):
+    def test_uni_is_opt_in_and_default_provider_stays_lightweight(self) -> None:
+        provider = get_attention_provider(prefer_uni=False)
+
+        self.assertIsInstance(provider, DeterministicDemoAttentionProvider)
+
+    def test_missing_local_checkpoint_has_clear_offline_fallback_status(self) -> None:
+        with TemporaryDirectory() as directory:
+            missing = Path(directory) / "pytorch_model.bin"
+            status = get_uni_provider_status(missing)
+
+        self.assertFalse(status.ready)
+        self.assertIn("checkpoint not found", status.summary.lower())
+        self.assertIn("will not download", status.detail.lower())
+
+    def test_letterbox_preserves_aspect_ratio_and_reports_content_box(self) -> None:
+        square, content_box = _letterbox(Image.new("RGB", (400, 200), "white"))
+
+        self.assertEqual(square.size, (224, 224))
+        left, top, right, bottom = content_box
+        self.assertEqual((right - left, bottom - top), (224, 112))
+        self.assertEqual((left, top), (0, 56))
 
 
 if __name__ == "__main__":

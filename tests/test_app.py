@@ -56,6 +56,12 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         self.assertEqual(len(app.file_uploader), 1)
         self.assertTrue(any(item.value == EXPECTED_DISCLAIMER for item in app.warning))
         self.assertTrue(any("Research/Education Prototype" in item.value for item in app.caption))
+        self.assertTrue(
+            any(
+                "No trained review-priority classifier is loaded" in item.value
+                for item in app.caption
+            )
+        )
 
     def test_mixed_upload_and_no_supported_zip_render_without_errors(self) -> None:
         valid_png = _image_bytes()

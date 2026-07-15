@@ -209,10 +209,14 @@ def _process_image_bytes(
         fallback = DeterministicDemoAttentionProvider()
         attention = fallback.analyze(image)
         notes.append(
-            "The configured attention provider was unavailable for this image; the "
+            "The configured local model provider could not process this image; the "
             f"deterministic demonstration fallback was used ({type(exc).__name__})."
         )
-    triage = assign_review_priority(quality, attention.visual_complexity_score)
+    triage = assign_review_priority(
+        quality,
+        attention.visual_complexity_score,
+        attention.priority_score_source,
+    )
 
     return (
         ImageRecord(
