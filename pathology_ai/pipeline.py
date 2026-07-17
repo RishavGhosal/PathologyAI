@@ -19,6 +19,7 @@ from .attention import (
 )
 from .quality import QualityAssessment, assess_image_quality
 from .triage import TriageResult, assign_review_priority, priority_sort_key
+from .review_model import LocalPrototypeReviewHead
 
 
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -169,6 +170,7 @@ def _process_image_bytes(
     source_name: str,
     display_name: str,
     provider: AttentionProvider,
+    review_model: LocalPrototypeReviewHead | None = None,
 ) -> tuple[ImageRecord | None, SkippedFile | None]:
     if not data:
         return None, SkippedFile(source_name, file_name, "File is empty.")
@@ -203,6 +205,7 @@ def _process_image_bytes(
         )
 
     quality = assess_image_quality(image)
+    fallback_reason: str | None = None
     try:
         attention = provider.analyze(image)
     except Exception as exc:  # A future optional model must not break basic review.
@@ -212,10 +215,31 @@ def _process_image_bytes(
             "The configured local model provider could not process this image; the "
             f"deterministic demonstration fallback was used ({type(exc).__name__})."
         )
+        fallback_reason = f"attention_provider_error:{type(exc).__name__}"
+    prediction = None
+    if review_model is not None and quality.adequate:
+        if attention.embedding is None:
+            notes.append(
+                "The experimental priority head could not run because a UNI embedding "
+                "was unavailable; the deterministic review-priority fallback was used."
+            )
+            fallback_reason = fallback_reason or "uni_embedding_unavailable"
+        else:
+            try:
+                prediction = review_model.predict(attention.embedding)
+            except Exception as exc:
+                notes.append(
+                    "The experimental priority head could not process this image; the "
+                    f"deterministic review-priority fallback was used ({type(exc).__name__})."
+                )
+                fallback_reason = f"experimental_head_error:{type(exc).__name__}"
     triage = assign_review_priority(
         quality,
         attention.visual_complexity_score,
-        attention.priority_score_source,
+        attention.priority_score_source if prediction is None else prediction.source,
+        experimental_priority=None if prediction is None else prediction.priority,
+        review_first_score=None if prediction is None else prediction.review_first_score,
+        fallback_reason=fallback_reason,
     )
 
     return (
@@ -243,6 +267,7 @@ def _process_zip(
     payload: UploadPayload,
     provider: AttentionProvider,
     decoded_pixel_budget: int,
+    review_model: LocalPrototypeReviewHead | None = None,
 ) -> tuple[list[ImageRecord], list[SkippedFile]]:
     records: list[ImageRecord] = []
     skipped: list[SkippedFile] = []
@@ -361,6 +386,7 @@ def _process_zip(
                     payload.name,
                     f"{payload.name} / {member_name}",
                     provider,
+                    review_model,
                 )
                 if record is not None:
                     decoded_pixels = record.width * record.height
@@ -392,6 +418,7 @@ def _process_zip(
 def process_uploads(
     payloads: list[UploadPayload],
     provider: AttentionProvider | None = None,
+    review_model: LocalPrototypeReviewHead | None = None,
 ) -> BatchResult:
     """Validate and process top-level uploads and safe in-memory ZIP members."""
 
@@ -412,6 +439,7 @@ def process_uploads(
                 payload,
                 active_provider,
                 remaining_decoded_pixels,
+                review_model,
             )
             records.extend(zip_records)
             skipped.extend(zip_skipped)
@@ -426,6 +454,7 @@ def process_uploads(
             payload.name,
             payload.name,
             active_provider,
+            review_model,
         )
         if record is not None:
             decoded_pixels = record.width * record.height

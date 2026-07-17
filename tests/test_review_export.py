@@ -31,6 +31,7 @@ def _record(image_id: str, embedding: tuple[float, ...] | None) -> SimpleNamespa
             (),
             {},
             advisories=("Possible edge contact; verify manually.",),
+            advisory_codes=("possible_edge_truncation",),
         ),
         attention=AttentionResult(
             overlay=preview,
@@ -58,6 +59,7 @@ class ReviewExportTests(unittest.TestCase):
                 "priority": LOWER_PRIORITY,
                 "notes": "reviewed, educational example",
                 "group_id": "slide-group-001",
+                "reviewed_at_utc": "2026-07-17T20:00:00+00:00",
             },
             "unreviewed-id": {
                 "reviewed": False,
@@ -74,8 +76,15 @@ class ReviewExportTests(unittest.TestCase):
         row = rows[0]
         self.assertEqual(row["image_id"], "reviewed-id")
         self.assertEqual(row["reviewer_priority"], LOWER_PRIORITY)
+        self.assertEqual(row["group_id_format_validated"], "True")
         self.assertEqual(row["embedding_available"], "True")
         self.assertEqual(row["embedding_dimension"], "1024")
+        self.assertEqual(row["priority_overridden"], "True")
+        self.assertEqual(row["domain_context"], "unknown_or_other")
+        self.assertEqual(row["reviewed_at_utc"], "2026-07-17T20:00:00+00:00")
+        self.assertEqual(row["quality_issue_codes"], "")
+        self.assertEqual(row["quality_advisory_codes"], "possible_edge_truncation")
+        self.assertIn("priority_source", row)
         self.assertEqual(len(EMBEDDING_COLUMNS), 1024)
         self.assertNotEqual(row["uni_1023"], "")
         self.assertNotIn("private_filename.jpg", payload)
@@ -89,7 +98,7 @@ class ReviewExportTests(unittest.TestCase):
                 "reviewed": True,
                 "priority": REVIEW_FIRST,
                 "notes": "=HYPERLINK(\"https://example.invalid\")",
-                "group_id": "+private-value",
+                "group_id": "private-value",
             }
         }
 
@@ -100,7 +109,7 @@ class ReviewExportTests(unittest.TestCase):
         )
 
         self.assertTrue(row["reviewer_notes"].startswith("'="))
-        self.assertTrue(row["group_id"].startswith("'+"))
+        self.assertEqual(row["group_id"], "private-value")
         self.assertEqual(row["embedding_available"], "False")
         self.assertEqual(row["uni_0000"], "")
 
@@ -111,12 +120,71 @@ class ReviewExportTests(unittest.TestCase):
                 "reviewed": True,
                 "priority": REVIEW_FIRST,
                 "notes": "",
-                "group_id": "",
+                "group_id": "slide-group-003",
             }
         }
 
         with self.assertRaisesRegex(ValueError, "unexpected dimension"):
             build_review_export_csv([record], reviews)
+
+    def test_export_uses_completed_review_snapshot_after_model_change(self) -> None:
+        record = _record("snapshot-id", None)
+        record.triage = TriageResult(LOWER_PRIORITY, "Current deterministic result.")
+        saved_embedding = tuple([0.125] * UNI_EMBEDDING_DIMENSION)
+        reviews = {
+            "snapshot-id": {
+                "reviewed": True,
+                "priority": REVIEW_FIRST,
+                "notes": "",
+                "group_id": "slide-group-005",
+                "suggested_priority_at_review": REVIEW_FIRST,
+                "priority_source_at_review": "Saved experimental head",
+                "priority_method_at_review": "experimental_head",
+                "priority_fallback_reason_at_review": "",
+                "review_first_proxy_score_at_review": 0.7,
+                "attention_provider_at_review": "Saved UNI provider",
+                "embedding_model_at_review": UNI_MODEL_ID,
+                "embedding_at_review": saved_embedding,
+            }
+        }
+
+        row = next(
+            csv.DictReader(
+                StringIO(build_review_export_csv([record], reviews).decode("utf-8"))
+            )
+        )
+
+        self.assertEqual(row["suggested_priority"], REVIEW_FIRST)
+        self.assertEqual(row["priority_overridden"], "False")
+        self.assertEqual(row["priority_method"], "experimental_head")
+        self.assertEqual(row["review_first_proxy_score"], "0.7")
+        self.assertEqual(row["attention_provider"], "Saved UNI provider")
+        self.assertEqual(row["embedding_available"], "True")
+        self.assertEqual(row["uni_0000"], "0.125")
+
+    def test_export_rejects_missing_group_and_missing_override_reason(self) -> None:
+        record = _record("required-fields", None)
+        missing_group = {
+            "required-fields": {
+                "reviewed": True,
+                "priority": REVIEW_FIRST,
+                "notes": "",
+                "group_id": "",
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "group ID is required"):
+            build_review_export_csv([record], missing_group)
+
+        missing_reason = {
+            "required-fields": {
+                "reviewed": True,
+                "priority": LOWER_PRIORITY,
+                "notes": "",
+                "group_id": "slide-group-004",
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "notes are required"):
+            build_review_export_csv([record], missing_reason)
 
 
 if __name__ == "__main__":

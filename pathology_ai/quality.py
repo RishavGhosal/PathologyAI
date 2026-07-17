@@ -14,6 +14,16 @@ DARKNESS_THRESHOLD = 28.0
 BRIGHTNESS_THRESHOLD = 232.0
 UNIFORMITY_THRESHOLD = 6.0
 
+# Stable machine-readable codes used by dashboards and reviewer exports. Keep
+# these values independent from human-readable wording so copy changes do not
+# break aggregation.
+ISSUE_SMALL_DIMENSIONS = "small_dimensions"
+ISSUE_EXCESSIVE_DARKNESS = "excessive_darkness"
+ISSUE_EXCESSIVE_BRIGHTNESS = "excessive_brightness"
+ISSUE_BLANK_OR_NEARLY_UNIFORM = "blank_or_nearly_uniform"
+ISSUE_BLUR = "blur"
+ADVISORY_POSSIBLE_EDGE_TRUNCATION = "possible_edge_truncation"
+
 
 @dataclass(frozen=True)
 class QualityAssessment:
@@ -23,6 +33,8 @@ class QualityAssessment:
     reasons: tuple[str, ...]
     metrics: dict[str, float]
     advisories: tuple[str, ...] = ()
+    issue_codes: tuple[str, ...] = ()
+    advisory_codes: tuple[str, ...] = ()
 
 
 def _analysis_array(image: Image.Image, max_side: int = 768) -> np.ndarray:
@@ -103,24 +115,31 @@ def assess_image_quality(image: Image.Image) -> QualityAssessment:
     possible_crop, edge_contacts = _possible_edge_truncation(rgb)
 
     reasons: list[str] = []
+    issue_codes: list[str] = []
     advisories: list[str] = []
+    advisory_codes: list[str] = []
     if min(width, height) < MIN_DIMENSION:
         reasons.append(
             f"Very small dimensions ({width} × {height} px); use an image at least "
             f"{MIN_DIMENSION} px on each side."
         )
+        issue_codes.append(ISSUE_SMALL_DIMENSIONS)
     if brightness <= DARKNESS_THRESHOLD:
         reasons.append("Image is excessively dark, so important visual detail may be hidden.")
+        issue_codes.append(ISSUE_EXCESSIVE_DARKNESS)
     elif brightness >= BRIGHTNESS_THRESHOLD:
         reasons.append("Image is excessively bright, so important visual detail may be washed out.")
+        issue_codes.append(ISSUE_EXCESSIVE_BRIGHTNESS)
 
     nearly_uniform = contrast <= UNIFORMITY_THRESHOLD
     if nearly_uniform:
         reasons.append("Image is blank or nearly uniform (very little tonal variation).")
+        issue_codes.append(ISSUE_BLANK_OR_NEARLY_UNIFORM)
     elif blur_score < BLUR_SCORE_THRESHOLD:
         reasons.append(
             "Image appears blurred or out of focus based on its low edge sharpness."
         )
+        issue_codes.append(ISSUE_BLUR)
 
     if possible_crop:
         advisories.append(
@@ -128,6 +147,7 @@ def assess_image_quality(image: Image.Image) -> QualityAssessment:
             "background remains visible. This can be normal for microscopy fields; "
             "manual verification is recommended."
         )
+        advisory_codes.append(ADVISORY_POSSIBLE_EDGE_TRUNCATION)
 
     return QualityAssessment(
         adequate=not reasons,
@@ -139,4 +159,6 @@ def assess_image_quality(image: Image.Image) -> QualityAssessment:
             "edge_contacts": float(edge_contacts),
         },
         advisories=tuple(advisories),
+        issue_codes=tuple(issue_codes),
+        advisory_codes=tuple(advisory_codes),
     )

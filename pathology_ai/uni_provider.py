@@ -122,6 +122,19 @@ def _letterbox(image: Image.Image) -> tuple[Image.Image, tuple[int, int, int, in
     return square, (left, top, left + resized.width, top + resized.height)
 
 
+def prepare_uni_tensor(image: Image.Image) -> Any:
+    """Return one normalized CHW tensor using the app's UNI preprocessing."""
+
+    import torch
+
+    square, _ = _letterbox(image)
+    values = np.asarray(square, dtype=np.float32) / 255.0
+    values = (values - np.array((0.485, 0.456, 0.406), dtype=np.float32)) / np.array(
+        (0.229, 0.224, 0.225), dtype=np.float32
+    )
+    return torch.from_numpy(values.transpose(2, 0, 1))
+
+
 def _normalized(values: np.ndarray) -> np.ndarray:
     low = float(np.percentile(values, 5.0))
     high = float(np.percentile(values, 95.0))
@@ -213,11 +226,7 @@ class LocalUNIFeatureProvider:
             str(self.checkpoint_path), stat.st_size, stat.st_mtime_ns
         )
         square, content_box = _letterbox(image)
-        values = np.asarray(square, dtype=np.float32) / 255.0
-        values = (values - np.array((0.485, 0.456, 0.406), dtype=np.float32)) / np.array(
-            (0.229, 0.224, 0.225), dtype=np.float32
-        )
-        tensor = torch.from_numpy(values.transpose(2, 0, 1)).unsqueeze(0).to(device)
+        tensor = prepare_uni_tensor(image).unsqueeze(0).to(device)
 
         with _INFERENCE_LOCK, torch.inference_mode():
             tokens = model.forward_features(tensor)
@@ -250,8 +259,8 @@ class LocalUNIFeatureProvider:
             f"{region} because its representation differs comparatively more from other "
             "regions in this resized image under the local UNI encoder. This is an "
             "exploratory feature-variation visualization, not a validated clinical "
-            "attention map, pathology finding, or medical conclusion. UNI does not "
-            "generate the review-priority label in this MVP."
+            "attention map, pathology finding, or medical conclusion. UNI alone does "
+            "not assign review priority."
         )
         return AttentionResult(
             overlay=overlay,

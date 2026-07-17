@@ -22,12 +22,14 @@ from pathology_ai.attention import (
     get_attention_provider,
 )
 from pathology_ai.pipeline import UploadPayload, process_uploads
+from pathology_ai.review_model import ReviewModelPrediction
 from pathology_ai.quality import QualityAssessment, assess_image_quality
 from pathology_ai.triage import (
     LOWER_PRIORITY,
     NEEDS_BETTER_IMAGE,
     PRIORITIES,
     REVIEW_FIRST,
+    TriageResult,
     assign_review_priority,
     priority_sort_key,
 )
@@ -112,6 +114,39 @@ class _FailingAttentionProvider:
         raise RuntimeError("model artifact unavailable")
 
 
+class _EmbeddingAttentionProvider(_MarkerAttentionProvider):
+    def analyze(self, image: Image.Image) -> AttentionResult:
+        result = super().analyze(image)
+        return AttentionResult(
+            overlay=result.overlay,
+            heatmap=result.heatmap,
+            explanation=result.explanation,
+            visual_complexity_score=result.visual_complexity_score,
+            provider_name="Test UNI provider",
+            is_demonstration=True,
+            uses_trained_encoder=True,
+            embedding=tuple([0.25] * 1024),
+            embedding_model="MahmoodLab/UNI",
+        )
+
+
+class _FakeReviewHead:
+    def __init__(self, priority: str = REVIEW_FIRST, score: float = 0.8) -> None:
+        self.priority = priority
+        self.score = score
+        self.calls = 0
+
+    def predict(self, embedding: tuple[float, ...]) -> ReviewModelPrediction:
+        self.calls += 1
+        self.last_embedding = embedding
+        return ReviewModelPrediction(self.priority, self.score)
+
+
+class _FailingReviewHead:
+    def predict(self, embedding: tuple[float, ...]) -> ReviewModelPrediction:
+        raise RuntimeError("prototype head failed")
+
+
 class FileValidationTests(unittest.TestCase):
     def test_valid_png_jpeg_and_tiff_are_decoded_with_metadata(self) -> None:
         image = _reviewable_image()
@@ -190,12 +225,14 @@ class QualityAssessmentTests(unittest.TestCase):
             any("blurred or out of focus" in reason for reason in quality.reasons),
             quality.reasons,
         )
+        self.assertIn("blur", quality.issue_codes)
 
     def test_very_small_image_is_detected(self) -> None:
         quality = assess_image_quality(_small_image())
 
         self.assertFalse(quality.adequate)
         self.assertTrue(any("Very small dimensions" in reason for reason in quality.reasons))
+        self.assertIn("small_dimensions", quality.issue_codes)
 
     def test_excessive_darkness_and_brightness_are_detected(self) -> None:
         cases = (
@@ -210,6 +247,14 @@ class QualityAssessmentTests(unittest.TestCase):
                     any(expected_text in reason for reason in quality.reasons),
                     quality.reasons,
                 )
+        self.assertIn(
+            "excessive_darkness",
+            assess_image_quality(Image.new("RGB", (256, 256), (5, 5, 5))).issue_codes,
+        )
+        self.assertIn(
+            "excessive_brightness",
+            assess_image_quality(Image.new("RGB", (256, 256), (250, 250, 250))).issue_codes,
+        )
 
     def test_blank_or_nearly_uniform_image_is_detected(self) -> None:
         quality = assess_image_quality(Image.new("RGB", (256, 256), (128, 128, 128)))
@@ -219,6 +264,7 @@ class QualityAssessmentTests(unittest.TestCase):
             any("blank or nearly uniform" in reason for reason in quality.reasons),
             quality.reasons,
         )
+        self.assertIn("blank_or_nearly_uniform", quality.issue_codes)
 
     def test_possible_crop_is_detected_conservatively(self) -> None:
         quality = assess_image_quality(_cropped_looking_image())
@@ -229,6 +275,7 @@ class QualityAssessmentTests(unittest.TestCase):
             any("Possible edge truncation" in reason for reason in quality.advisories),
             quality.advisories,
         )
+        self.assertIn("possible_edge_truncation", quality.advisory_codes)
 
     def test_normal_skin_fixture_passes_with_nonblocking_crop_advisory(self) -> None:
         fixture = (
@@ -371,6 +418,61 @@ class AttentionAndTriageTests(unittest.TestCase):
             record.metadata_notes,
         )
 
+    def test_experimental_head_uses_uni_embedding_for_binary_priority(self) -> None:
+        payload = UploadPayload(
+            "image.png",
+            _encode_image(_reviewable_image(marker=255), "PNG"),
+        )
+        head = _FakeReviewHead(priority=REVIEW_FIRST, score=0.81)
+
+        result = process_uploads(
+            [payload], provider=_EmbeddingAttentionProvider(), review_model=head
+        )
+
+        record = result.records[0]
+        self.assertEqual(head.calls, 1)
+        self.assertEqual(record.triage.suggested_priority, REVIEW_FIRST)
+        self.assertTrue(record.triage.is_experimental_model)
+        self.assertEqual(record.triage.priority_method, "experimental_head")
+        self.assertEqual(record.triage.review_first_score, 0.81)
+        self.assertIn("agreement proxy", record.triage.explanation)
+
+    def test_quality_gate_prevents_experimental_head_override(self) -> None:
+        payload = UploadPayload(
+            "small.png",
+            _encode_image(_small_image(), "PNG"),
+        )
+        head = _FakeReviewHead(priority=REVIEW_FIRST, score=0.99)
+
+        result = process_uploads(
+            [payload], provider=_EmbeddingAttentionProvider(), review_model=head
+        )
+
+        record = result.records[0]
+        self.assertEqual(head.calls, 0)
+        self.assertEqual(record.triage.suggested_priority, NEEDS_BETTER_IMAGE)
+        self.assertEqual(record.triage.priority_source, "Image-quality checks")
+        self.assertEqual(record.triage.priority_method, "quality_gate")
+
+    def test_failed_experimental_head_falls_back_visibly(self) -> None:
+        payload = UploadPayload(
+            "image.png",
+            _encode_image(_reviewable_image(marker=255), "PNG"),
+        )
+
+        result = process_uploads(
+            [payload],
+            provider=_EmbeddingAttentionProvider(),
+            review_model=_FailingReviewHead(),
+        )
+
+        record = result.records[0]
+        self.assertFalse(record.triage.is_experimental_model)
+        self.assertEqual(record.triage.suggested_priority, LOWER_PRIORITY)
+        self.assertTrue(
+            any("review-priority fallback was used" in note for note in record.metadata_notes)
+        )
+
     def test_all_three_exact_priority_labels_appear_and_sort_safely(self) -> None:
         provider = _MarkerAttentionProvider()
         payloads = [
@@ -421,6 +523,36 @@ class AttentionAndTriageTests(unittest.TestCase):
         }
 
         self.assertEqual(labels, set(PRIORITIES))
+
+    def test_deterministic_triage_carries_structured_fallback_reason(self) -> None:
+        triage = assign_review_priority(
+            QualityAssessment(True, (), {}),
+            0.10,
+            fallback_reason="experimental_head_error:RuntimeError",
+        )
+
+        self.assertEqual(triage.priority_method, "deterministic")
+        self.assertEqual(
+            triage.fallback_reason, "experimental_head_error:RuntimeError"
+        )
+
+    def test_quality_gate_preserves_attention_fallback_reason(self) -> None:
+        triage = assign_review_priority(
+            QualityAssessment(False, ("fixture failed quality",), {}),
+            0.10,
+            fallback_reason="attention_provider_error:RuntimeError",
+        )
+
+        self.assertEqual(triage.priority_method, "quality_gate")
+        self.assertEqual(
+            triage.fallback_reason, "attention_provider_error:RuntimeError"
+        )
+
+    def test_triage_rejects_unknown_method_and_blank_fallback_reason(self) -> None:
+        with self.assertRaises(ValueError):
+            TriageResult(REVIEW_FIRST, "fixture", priority_method="unknown")
+        with self.assertRaises(ValueError):
+            TriageResult(REVIEW_FIRST, "fixture", fallback_reason="   ")
 
 
 class UNIProviderConfigurationTests(unittest.TestCase):
