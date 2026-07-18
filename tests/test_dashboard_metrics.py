@@ -8,6 +8,7 @@ import unittest
 
 from pathology_ai.dashboard_metrics import (
     MHIST_LIKE_DOMAIN,
+    UNKNOWN_OR_OTHER_DOMAIN,
     build_operational_metrics,
 )
 from pathology_ai.triage import LOWER_PRIORITY, NEEDS_BETTER_IMAGE, REVIEW_FIRST
@@ -128,8 +129,11 @@ class OperationalMetricsTests(unittest.TestCase):
             {"possible_edge_truncation": 1},
         )
         self.assertEqual(metrics.embedding_success_count, 2)
+        self.assertEqual(metrics.embedding_failure_count, 2)
+        self.assertEqual(metrics.embedding_not_attempted_count, 0)
         self.assertEqual(metrics.experimental_model_prediction_count, 2)
         self.assertEqual(metrics.deterministic_prediction_count, 1)
+        self.assertEqual(metrics.deterministic_fallback_prediction_count, 1)
         self.assertEqual(metrics.quality_gate_count, 1)
         self.assertEqual(metrics.runtime_fallback_count, 1)
         self.assertEqual(metrics.proxy_scores, (0.8, 0.2))
@@ -148,8 +152,19 @@ class OperationalMetricsTests(unittest.TestCase):
         self.assertEqual(rows[REVIEW_FIRST].agreement_percentage, 100.0)
         self.assertEqual(rows[LOWER_PRIORITY].agreement_percentage, 0.0)
         self.assertEqual(rows[NEEDS_BETTER_IMAGE].agreement_percentage, 100.0)
+        model_rows = {
+            row.suggested_priority: row
+            for row in metrics.model_agreement_by_suggested_priority
+        }
+        self.assertEqual(model_rows[REVIEW_FIRST].agreement_percentage, 100.0)
+        self.assertEqual(model_rows[LOWER_PRIORITY].agreement_percentage, 0.0)
+        self.assertIsNone(model_rows[NEEDS_BETTER_IMAGE].agreement_percentage)
 
         self.assertEqual(metrics.domain_warning_count, 2)
+        self.assertEqual(
+            metrics.domain_declaration_counts,
+            {UNKNOWN_OR_OTHER_DOMAIN: 4, MHIST_LIKE_DOMAIN: 0},
+        )
         self.assertEqual(metrics.estimated_time_avoided_seconds, 90.0)
 
     def test_empty_batch_has_zero_progress_and_unmeasured_agreement(self) -> None:
@@ -163,6 +178,10 @@ class OperationalMetricsTests(unittest.TestCase):
         self.assertTrue(
             all(row.agreement_percentage is None for row in metrics.agreement_by_suggested_priority)
         )
+        self.assertEqual(
+            metrics.domain_declaration_counts,
+            {UNKNOWN_OR_OTHER_DOMAIN: 0, MHIST_LIKE_DOMAIN: 0},
+        )
 
     def test_mhist_like_declaration_suppresses_domain_warnings(self) -> None:
         record = _record("model", REVIEW_FIRST, experimental=True, score=0.7)
@@ -174,6 +193,23 @@ class OperationalMetricsTests(unittest.TestCase):
 
         self.assertEqual(metrics.experimental_model_prediction_count, 1)
         self.assertEqual(metrics.domain_warning_count, 0)
+        self.assertEqual(
+            metrics.domain_declaration_counts,
+            {UNKNOWN_OR_OTHER_DOMAIN: 0, MHIST_LIKE_DOMAIN: 1},
+        )
+
+    def test_uni_disabled_is_not_reported_as_embedding_failure(self) -> None:
+        record = _record("not-attempted", LOWER_PRIORITY)
+
+        metrics = build_operational_metrics(
+            _batch([record]),
+            {},
+            embedding_expected=False,
+        )
+
+        self.assertEqual(metrics.embedding_success_count, 0)
+        self.assertEqual(metrics.embedding_failure_count, 0)
+        self.assertEqual(metrics.embedding_not_attempted_count, 1)
 
     def test_structured_fallback_field_takes_precedence_over_legacy_notes(self) -> None:
         legacy_note = (
@@ -196,6 +232,7 @@ class OperationalMetricsTests(unittest.TestCase):
         metrics = build_operational_metrics(_batch(records), {})
 
         self.assertEqual(metrics.runtime_fallback_count, 1)
+        self.assertEqual(metrics.deterministic_fallback_prediction_count, 1)
 
     def test_priority_method_is_used_when_modern_structured_field_exists(self) -> None:
         records = [
@@ -277,6 +314,12 @@ class OperationalMetricsTests(unittest.TestCase):
         }
         self.assertEqual(rows[REVIEW_FIRST].reviewed_count, 1)
         self.assertEqual(rows[LOWER_PRIORITY].reviewed_count, 0)
+        model_rows = {
+            row.suggested_priority: row
+            for row in metrics.model_agreement_by_suggested_priority
+        }
+        self.assertEqual(model_rows[REVIEW_FIRST].reviewed_count, 1)
+        self.assertEqual(model_rows[LOWER_PRIORITY].reviewed_count, 0)
 
     def test_screening_time_must_be_finite_and_non_negative(self) -> None:
         for value in (-1, math.inf, math.nan, "not-a-number"):

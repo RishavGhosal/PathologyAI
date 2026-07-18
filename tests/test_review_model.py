@@ -40,6 +40,17 @@ def _report(threshold: float = 0.5) -> dict[str, object]:
             "balanced_accuracy": 0.5,
             "roc_auc": 0.5,
             "average_precision": 0.5,
+            "roc_curve": {
+                "positive_class": "Review First",
+                "false_positive_rate": [0.0, 1.0],
+                "true_positive_rate": [0.0, 1.0],
+            },
+            "precision_recall_curve": {
+                "positive_class": "Review First",
+                "recall": [1.0, 0.0],
+                "precision": [0.5, 1.0],
+                "baseline_precision": 0.5,
+            },
             "review_first_precision": 0.5,
             "review_first_recall": 0.5,
             "review_first_f1": 0.5,
@@ -166,6 +177,25 @@ class ReviewModelEvaluationStatusTests(unittest.TestCase):
         self.assertTrue(status.ready)
         self.assertFalse(status.evaluation_valid)
         self.assertIn("queue size is inconsistent", status.evaluation_error or "")
+
+    def test_inconsistent_curve_coordinates_are_hidden(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            _write_base_artifacts(directory)
+            report = _report()
+            report["overall_test_metrics"]["roc_curve"]["true_positive_rate"] = [
+                0.0,
+                0.75,
+            ]
+            (directory / "metrics.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+
+            status = get_review_model_status(directory)
+
+        self.assertTrue(status.ready)
+        self.assertFalse(status.evaluation_valid)
+        self.assertIn("ROC curve", status.evaluation_error or "")
 
     def test_missing_metrics_keeps_inference_ready(self) -> None:
         with TemporaryDirectory() as temp_dir:

@@ -70,6 +70,71 @@ def _required_rate(values: dict[str, Any], key: str) -> float:
     return value
 
 
+def _curve_series(curve: dict[str, Any], key: str) -> np.ndarray:
+    values = np.asarray(curve.get(key), dtype=np.float64)
+    if values.ndim != 1 or values.size < 2 or not np.isfinite(values).all():
+        raise ValueError(f"evaluation curve {key!r} must contain finite 1D values")
+    if np.any(values < 0.0) or np.any(values > 1.0):
+        raise ValueError(f"evaluation curve {key!r} must stay between zero and one")
+    return values
+
+
+def _validate_curve_diagnostics(
+    overall: dict[str, Any],
+    *,
+    roc_auc: float,
+    positive_prevalence: float,
+) -> None:
+    """Validate optional raw coordinates used by dashboard ROC/PR charts."""
+
+    has_roc = "roc_curve" in overall
+    has_pr = "precision_recall_curve" in overall
+    if not has_roc and not has_pr:
+        return
+    if not has_roc or not has_pr:
+        raise ValueError("evaluation ROC and precision-recall curves must be provided together")
+
+    roc = overall["roc_curve"]
+    if not isinstance(roc, dict) or roc.get("positive_class") != REVIEW_FIRST:
+        raise ValueError("ROC curve must identify Review First as the positive class")
+    false_positive_rate = _curve_series(roc, "false_positive_rate")
+    true_positive_rate = _curve_series(roc, "true_positive_rate")
+    if false_positive_rate.shape != true_positive_rate.shape:
+        raise ValueError("ROC curve coordinate arrays must have equal lengths")
+    if np.any(np.diff(false_positive_rate) < 0.0) or np.any(
+        np.diff(true_positive_rate) < 0.0
+    ):
+        raise ValueError("ROC curve coordinates must be non-decreasing")
+    if not (
+        np.isclose(false_positive_rate[0], 0.0)
+        and np.isclose(true_positive_rate[0], 0.0)
+        and np.isclose(false_positive_rate[-1], 1.0)
+        and np.isclose(true_positive_rate[-1], 1.0)
+    ):
+        raise ValueError("ROC curve must run from (0, 0) to (1, 1)")
+    calculated_auc = float(np.trapezoid(true_positive_rate, false_positive_rate))
+    if not np.isclose(calculated_auc, roc_auc, rtol=0.0, atol=1e-12):
+        raise ValueError("ROC curve coordinates conflict with roc_auc")
+
+    precision_recall = overall["precision_recall_curve"]
+    if (
+        not isinstance(precision_recall, dict)
+        or precision_recall.get("positive_class") != REVIEW_FIRST
+    ):
+        raise ValueError(
+            "precision-recall curve must identify Review First as the positive class"
+        )
+    recall = _curve_series(precision_recall, "recall")
+    precision = _curve_series(precision_recall, "precision")
+    if recall.shape != precision.shape:
+        raise ValueError("precision-recall coordinate arrays must have equal lengths")
+    if np.any(np.diff(recall) > 0.0):
+        raise ValueError("precision-recall recall coordinates must be non-increasing")
+    baseline = _required_rate(precision_recall, "baseline_precision")
+    if not np.isclose(baseline, positive_prevalence, rtol=0.0, atol=1e-12):
+        raise ValueError("precision-recall baseline conflicts with class prevalence")
+
+
 def _validate_evaluation_report(
     report: Any,
     decision_threshold: float,
@@ -177,6 +242,12 @@ def _validate_evaluation_report(
     for key, expected_value in expected_rates.items():
         if not np.isclose(rates[key], expected_value, rtol=0.0, atol=1e-12):
             raise ValueError(f"evaluation metric {key!r} conflicts with confusion_matrix")
+
+    _validate_curve_diagnostics(
+        overall,
+        roc_auc=rates["roc_auc"],
+        positive_prevalence=review_first_count / sample_count,
+    )
 
     captures = overall.get("review_first_capture_by_queue_fraction")
     if not isinstance(captures, list) or len(captures) != 3:

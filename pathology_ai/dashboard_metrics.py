@@ -18,7 +18,9 @@ if TYPE_CHECKING:
     from .pipeline import BatchResult
 
 
+UNKNOWN_OR_OTHER_DOMAIN = "Unknown or other tissue"
 MHIST_LIKE_DOMAIN = "MHIST-like colorectal-polyp patches"
+DOMAIN_DECLARATIONS = (UNKNOWN_OR_OTHER_DOMAIN, MHIST_LIKE_DOMAIN)
 DEFAULT_SCREENING_SECONDS_PER_IMAGE = 30.0
 UNI_EMBEDDING_DIMENSION = 1024
 
@@ -55,8 +57,11 @@ class OperationalMetrics:
     quality_advisory_counts: dict[str, int]
 
     embedding_success_count: int
+    embedding_failure_count: int
+    embedding_not_attempted_count: int
     experimental_model_prediction_count: int
     deterministic_prediction_count: int
+    deterministic_fallback_prediction_count: int
     quality_gate_count: int
     runtime_fallback_count: int
 
@@ -74,8 +79,10 @@ class OperationalMetrics:
     model_overridden_count: int
     model_agreement_percentage: float | None
     agreement_by_suggested_priority: tuple[PriorityAgreementRow, ...]
+    model_agreement_by_suggested_priority: tuple[PriorityAgreementRow, ...]
 
     domain_declaration: str
+    domain_declaration_counts: dict[str, int]
     domain_warning_count: int
     screening_seconds_per_image: float
     estimated_time_avoided_seconds: float
@@ -212,8 +219,9 @@ def _finite_proxy_score(record: Any) -> float | None:
 def build_operational_metrics(
     batch: "BatchResult",
     reviews: Mapping[str, Mapping[str, object]],
-    domain_declaration: str = "Unknown or other tissue",
+    domain_declaration: str = UNKNOWN_OR_OTHER_DOMAIN,
     screening_seconds_per_image: float = DEFAULT_SCREENING_SECONDS_PER_IMAGE,
+    embedding_expected: bool = True,
 ) -> OperationalMetrics:
     """Calculate review-workflow metrics for a processed image batch.
 
@@ -239,6 +247,7 @@ def build_operational_metrics(
     embedding_success_count = 0
     method_counts = Counter({"experimental": 0, "deterministic": 0, "quality": 0})
     runtime_fallback_count = 0
+    deterministic_fallback_prediction_count = 0
     proxy_scores: list[float] = []
 
     reviewed_count = 0
@@ -249,6 +258,10 @@ def build_operational_metrics(
     model_confirmed_count = 0
     model_overridden_count = 0
     per_priority = {
+        priority: {"reviewed": 0, "confirmed": 0, "overridden": 0}
+        for priority in PRIORITIES
+    }
+    model_per_priority = {
         priority: {"reviewed": 0, "confirmed": 0, "overridden": 0}
         for priority in PRIORITIES
     }
@@ -277,6 +290,8 @@ def build_operational_metrics(
         method_counts[kind] += 1
         if _has_runtime_fallback(record):
             runtime_fallback_count += 1
+            if kind == "deterministic":
+                deterministic_fallback_prediction_count += 1
         score = _finite_proxy_score(record)
         if score is not None:
             proxy_scores.append(score)
@@ -315,6 +330,9 @@ def build_operational_metrics(
                 model_confirmed_count += 1
             else:
                 model_overridden_count += 1
+            model_bucket = model_per_priority[reviewed_suggestion]
+            model_bucket["reviewed"] += 1
+            model_bucket["confirmed" if confirmed else "overridden"] += 1
 
     total_images = len(records)
     awaiting_count = total_images - reviewed_count
@@ -335,9 +353,27 @@ def build_operational_metrics(
         )
         for priority in PRIORITIES
     )
+    model_agreement_rows = tuple(
+        PriorityAgreementRow(
+            suggested_priority=priority,
+            reviewed_count=model_per_priority[priority]["reviewed"],
+            confirmed_count=model_per_priority[priority]["confirmed"],
+            overridden_count=model_per_priority[priority]["overridden"],
+            agreement_percentage=_percentage(
+                model_per_priority[priority]["confirmed"],
+                model_per_priority[priority]["reviewed"],
+            ),
+        )
+        for priority in PRIORITIES
+    )
 
-    declaration = str(domain_declaration or "Unknown or other tissue").strip()
+    declaration = str(domain_declaration or UNKNOWN_OR_OTHER_DOMAIN).strip()
     is_mhist_like = declaration.casefold() == MHIST_LIKE_DOMAIN.casefold()
+    normalized_declaration = MHIST_LIKE_DOMAIN if is_mhist_like else UNKNOWN_OR_OTHER_DOMAIN
+    domain_declaration_counts = {
+        UNKNOWN_OR_OTHER_DOMAIN: 0 if is_mhist_like else total_images,
+        MHIST_LIKE_DOMAIN: total_images if is_mhist_like else 0,
+    }
     domain_warning_count = (
         0 if is_mhist_like else int(method_counts["experimental"])
     )
@@ -354,8 +390,13 @@ def build_operational_metrics(
         quality_issue_counts=dict(sorted(issue_counts.items())),
         quality_advisory_counts=dict(sorted(advisory_counts.items())),
         embedding_success_count=embedding_success_count,
+        embedding_failure_count=(
+            total_images - embedding_success_count if embedding_expected else 0
+        ),
+        embedding_not_attempted_count=0 if embedding_expected else total_images,
         experimental_model_prediction_count=int(method_counts["experimental"]),
         deterministic_prediction_count=int(method_counts["deterministic"]),
+        deterministic_fallback_prediction_count=deterministic_fallback_prediction_count,
         quality_gate_count=int(method_counts["quality"]),
         runtime_fallback_count=runtime_fallback_count,
         proxy_scores=tuple(proxy_scores),
@@ -374,7 +415,9 @@ def build_operational_metrics(
             model_confirmed_count, model_reviewed_count
         ),
         agreement_by_suggested_priority=agreement_rows,
-        domain_declaration=declaration,
+        model_agreement_by_suggested_priority=model_agreement_rows,
+        domain_declaration=normalized_declaration,
+        domain_declaration_counts=domain_declaration_counts,
         domain_warning_count=domain_warning_count,
         screening_seconds_per_image=seconds,
         estimated_time_avoided_seconds=(needs_better_count + skipped_count) * seconds,
@@ -383,8 +426,10 @@ def build_operational_metrics(
 
 __all__ = [
     "DEFAULT_SCREENING_SECONDS_PER_IMAGE",
+    "DOMAIN_DECLARATIONS",
     "MHIST_LIKE_DOMAIN",
     "OperationalMetrics",
     "PriorityAgreementRow",
+    "UNKNOWN_OR_OTHER_DOMAIN",
     "build_operational_metrics",
 ]

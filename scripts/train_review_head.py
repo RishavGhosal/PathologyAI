@@ -27,8 +27,10 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
     log_loss,
+    precision_recall_curve,
     precision_score,
     recall_score,
+    roc_curve,
     roc_auc_score,
 )
 from sklearn.pipeline import Pipeline
@@ -129,6 +131,12 @@ def metrics_for(
     review_first_probability: np.ndarray,
 ) -> dict[str, Any]:
     binary_truth = (truth == REVIEW_FIRST).astype(np.int8)
+    false_positive_rate, true_positive_rate, _roc_thresholds = roc_curve(
+        binary_truth, review_first_probability
+    )
+    curve_precision, curve_recall, _pr_thresholds = precision_recall_curve(
+        binary_truth, review_first_probability
+    )
     actual_by_predicted = confusion_matrix(
         truth, predicted, labels=[LOWER_PRIORITY, REVIEW_FIRST]
     )
@@ -162,6 +170,17 @@ def metrics_for(
         "average_precision": float(
             average_precision_score(binary_truth, review_first_probability)
         ),
+        "roc_curve": {
+            "positive_class": REVIEW_FIRST,
+            "false_positive_rate": false_positive_rate.tolist(),
+            "true_positive_rate": true_positive_rate.tolist(),
+        },
+        "precision_recall_curve": {
+            "positive_class": REVIEW_FIRST,
+            "recall": curve_recall.tolist(),
+            "precision": curve_precision.tolist(),
+            "baseline_precision": float(np.mean(binary_truth)),
+        },
         "brier_score": float(
             brier_score_loss(binary_truth, review_first_probability)
         ),

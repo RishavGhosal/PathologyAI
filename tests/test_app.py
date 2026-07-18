@@ -56,6 +56,10 @@ def _element_with_label(elements, label: str):
     return next(element for element in elements if element.label == label)
 
 
+def _dataframe_with_column(app: AppTest, column: str):
+    return next(frame.value for frame in app.dataframe if column in frame.value.columns)
+
+
 class StreamlitAppSmokeTests(unittest.TestCase):
     def test_app_starts_with_visible_safety_language(self) -> None:
         app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
@@ -103,7 +107,11 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         )
         self.assertEqual(values["Total files uploaded"], "5")
         self.assertEqual(values["Valid images"], "3")
-        self.assertEqual(values["Skipped or failed files"], "4")
+        self.assertEqual(values["Corrupted or skipped files"], "4")
+        self.assertEqual(values["UNI embedding successes"], "0")
+        self.assertEqual(values["UNI embedding failures"], "0")
+        self.assertEqual(values["UNI not attempted"], "3")
+        self.assertEqual(values["Unknown or other tissue"], "3")
 
         unsupported_zip = _zip_bytes(
             {"readme.txt": b"none", "table.csv": b"a,b\n1,2"}
@@ -118,7 +126,7 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         empty_values = _metrics(empty_app)
         self.assertEqual(len(empty_app.exception), 0)
         self.assertEqual(empty_values["Valid images"], "0")
-        self.assertEqual(empty_values["Skipped or failed files"], "2")
+        self.assertEqual(empty_values["Corrupted or skipped files"], "2")
         self.assertEqual(len(empty_app.error), 1)
 
     def test_viewer_configuration_and_manual_review_state(self) -> None:
@@ -175,6 +183,29 @@ class StreamlitAppSmokeTests(unittest.TestCase):
             "Lower Priority",
         )
         self.assertTrue(any("Reviewed for this Streamlit session" in x.value for x in app.success))
+        per_image = _dataframe_with_column(app, "Effective reviewer priority")
+        self.assertEqual(
+            list(per_image.columns),
+            [
+                "Filename",
+                "File type",
+                "Dimensions",
+                "File size",
+                "Image Quality",
+                "Attention source",
+                "Priority source",
+                "Suggested priority",
+                "Effective reviewer priority",
+                "Queue sort key",
+                "Experimental agreement-proxy score",
+                "Quality flags/codes",
+                "Review status",
+                "Case/slide group ID",
+                "Override status",
+            ],
+        )
+        self.assertEqual(per_image.iloc[0]["Review status"], "Reviewed")
+        self.assertEqual(per_image.iloc[0]["Case/slide group ID"], "slide-group-001")
 
     def test_review_requires_group_id(self) -> None:
         valid_png = _image_bytes()
@@ -309,8 +340,17 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         )
 
         heatmaps = []
+        chart_axis_titles = []
         for chart in app.get("plotly_chart"):
             spec = json.loads(chart.proto.spec)
+            chart_axis_titles.append(
+                str(
+                    spec.get("layout", {})
+                    .get("xaxis", {})
+                    .get("title", {})
+                    .get("text", "")
+                )
+            )
             if spec.get("data", [{}])[0].get("type") == "heatmap":
                 heatmaps.append(spec)
         self.assertEqual(len(heatmaps), 1)
@@ -325,6 +365,9 @@ class StreamlitAppSmokeTests(unittest.TestCase):
             heatmap["y"],
             [f"Predicted {label}" for label in matrix["row_labels"]],
         )
+        if "roc_curve" in overall:
+            self.assertIn("False-positive rate", chart_axis_titles)
+            self.assertIn("Recall", chart_axis_titles)
 
 
 if __name__ == "__main__":

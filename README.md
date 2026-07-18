@@ -157,6 +157,12 @@ experimental proxy score when present, and filename. Reviewers can filter by
 Awaiting/Reviewed/All, priority, and group; use Previous/Next; save a review; or
 save and move to the next matching unreviewed image.
 
+The collapsible **Per-image statistics** table exposes the effective priority
+and numeric queue sort key, experimental agreement-proxy score, stable blocking
+and advisory quality codes, reviewed/awaiting state, de-identified group ID,
+and override status. These are the record-level inputs used by the aggregate
+dashboard counts.
+
 A valid de-identified case/slide group ID is required before an image can be
 marked reviewed. Reviewer notes are required only when the suggested priority is
 overridden. The bulk group action fills only blank records from the same
@@ -173,10 +179,22 @@ Starting a new session or clearing Streamlit state removes them.
 ## Operational and model dashboards
 
 `Operational Dashboard` reports queue progress, effective priority counts,
-stable image-quality issue counts, skipped inputs, UNI embedding successes,
-experimental/deterministic/fallback counts, proxy-score distribution, and
-reviewer agreement. Tissue context is reviewer-declared; the app does not use an
-automatic out-of-domain detector.
+stable image-quality issue counts, skipped inputs, attempt-aware UNI embedding
+success/failure/not-attempted counts, experimental/deterministic/fallback
+counts, proxy-score distribution, and reviewer agreement. Experimental-head
+agreement and its per-priority breakdown include only completed reviews that
+were actually scored by that head. Tissue context counts cover valid images in
+the current batch; the declaration is batch-level and reviewer-supplied, and the
+app does not use an automatic out-of-domain detector.
+
+When at least eight compatible UNI embeddings are present, the operational tab
+adds one cached PCA-initialized t-SNE layout with three views colored by
+reviewer-confirmed priority, current batch domain declaration, and structured
+model/fallback source. Awaiting images are never presented as reviewer-confirmed.
+The domain view is normally one color because domain is declared once per batch.
+t-SNE axes, distances, and apparent clusters are descriptive and batch-relative;
+they are not scores, biological classes, diagnostic evidence, or proof of
+meaningful clusters. Adding images can change the layout.
 
 The configurable screening baseline defaults to 30 seconds per image. The
 displayed **Estimated time avoided reviewing unusable images** is calculated as
@@ -189,6 +207,12 @@ threshold from the local artifacts. The section is titled **MHIST
 Annotator-Agreement Proxy Evaluation — Not Cancer Accuracy**. If the evaluation
 threshold differs from the active head, or the report is missing or malformed,
 threshold-dependent metrics are hidden while inference remains available.
+
+Current training artifacts also include raw held-out ROC and precision-recall
+coordinates. The dashboard plots the ROC curve against a no-discrimination
+diagonal and the precision-recall curve against Review First prevalence. Legacy
+metrics artifacts without coordinates remain valid and show an explicit
+unavailable message instead of an invented curve.
 
 ## Reviewed-label research export
 
@@ -235,6 +259,8 @@ split-ready manifest or embedding artifact.
 - `pathology_ai/review_export.py` - reviewed-only, de-identified label and UNI
   embedding CSV export.
 - `pathology_ai/dashboard_metrics.py` - pure operational metric calculations.
+- `pathology_ai/dashboard_visuals.py` - validated, deterministic current-batch
+  t-SNE projection transform used by the Streamlit dashboard.
 - `pathology_ai/review_model.py` - optional trusted-local prototype head loader,
   metadata checks, score validation, and graceful fallback support.
 - `requirements-uni.txt` - optional CPU packages for local UNI inference.

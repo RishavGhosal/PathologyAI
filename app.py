@@ -22,7 +22,15 @@ from pathology_ai.pipeline import (
     process_uploads,
 )
 from pathology_ai.attention import get_attention_provider
-from pathology_ai.dashboard_metrics import build_operational_metrics
+from pathology_ai.dashboard_metrics import (
+    MHIST_LIKE_DOMAIN,
+    UNKNOWN_OR_OTHER_DOMAIN,
+    build_operational_metrics,
+)
+from pathology_ai.dashboard_visuals import (
+    ProjectionUnavailable,
+    build_tsne_projection,
+)
 from pathology_ai.review_export import (
     build_review_export_csv,
     validate_group_id,
@@ -46,9 +54,10 @@ DISCLAIMER = (
 )
 MAX_BROWSER_PREVIEW_SIDE = 1600
 NATIVE_PREVIEW_PIXEL_LIMIT = 4_000_000
+EMBEDDING_PROJECTION_CACHE_VERSION = "l2-tsne-v1"
 DOMAIN_LABEL_TO_VALUE = {
-    "Unknown or other tissue": "unknown_or_other",
-    "MHIST-like colorectal-polyp patches": "mhist_like_colorectal_polyp",
+    UNKNOWN_OR_OTHER_DOMAIN: "unknown_or_other",
+    MHIST_LIKE_DOMAIN: "mhist_like_colorectal_polyp",
 }
 
 
@@ -76,6 +85,15 @@ def _process_cached(
     provider = get_attention_provider(prefer_uni=use_uni)
     review_model = get_review_model() if use_review_model else None
     return process_uploads(payloads, provider=provider, review_model=review_model)
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def _project_embeddings_cached(
+    embeddings: tuple[tuple[float, ...], ...],
+    cache_version: str,
+):
+    del cache_version
+    return build_tsne_projection(embeddings)
 
 
 def _batch_fingerprint(payload_values: tuple[tuple[str, bytes, str], ...]) -> str:
@@ -464,6 +482,360 @@ def _render_safety_limitations() -> None:
         st.write(f"• {limitation}")
 
 
+def _render_evaluation_curves(overall: dict[str, object]) -> None:
+    """Render validated held-out ROC and precision-recall coordinates."""
+
+    st.markdown("#### Threshold-independent diagnostic curves")
+    roc = overall.get("roc_curve")
+    precision_recall = overall.get("precision_recall_curve")
+    if not isinstance(roc, dict) or not isinstance(precision_recall, dict):
+        st.info(
+            "ROC and precision-recall coordinates are not present in this evaluation "
+            "artifact. Retrain the local head with the current training script to add them."
+        )
+        return
+    if go is None:
+        st.dataframe(
+            [
+                {
+                    "Diagnostic": "ROC curve",
+                    "Points": len(roc.get("false_positive_rate", [])),
+                    "Summary": f"ROC-AUC {float(overall['roc_auc']):.3f}",
+                },
+                {
+                    "Diagnostic": "Precision-recall curve",
+                    "Points": len(precision_recall.get("recall", [])),
+                    "Summary": f"Average precision {float(overall['average_precision']):.3f}",
+                },
+            ],
+            hide_index=True,
+            width="stretch",
+        )
+        return
+
+    sample_count = int(overall["sample_count"])
+    chart_columns = st.columns(2)
+    chart_columns[0].markdown("##### ROC curve")
+    chart_columns[0].caption(
+        f"Held-out MHIST agreement-proxy test split (n={sample_count:,}); "
+        "Review First is the positive class."
+    )
+    roc_figure = go.Figure()
+    roc_figure.add_trace(
+        go.Scatter(
+            x=roc["false_positive_rate"],
+            y=roc["true_positive_rate"],
+            mode="lines",
+            name=f"Head (AUC {float(overall['roc_auc']):.3f})",
+            line=dict(color="#2563eb", width=3),
+            hovertemplate=(
+                "False-positive rate %{x:.3f}<br>True-positive rate %{y:.3f}"
+                "<extra></extra>"
+            ),
+        )
+    )
+    roc_figure.add_trace(
+        go.Scatter(
+            x=[0.0, 1.0],
+            y=[0.0, 1.0],
+            mode="lines",
+            name="No-discrimination reference",
+            line=dict(color="#94a3b8", width=2, dash="dash"),
+            hoverinfo="skip",
+        )
+    )
+    roc_figure.update_layout(
+        height=360,
+        margin=dict(l=20, r=20, t=45, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
+        xaxis=dict(title="False-positive rate", range=[0.0, 1.0]),
+        yaxis=dict(title="True-positive rate", range=[0.0, 1.0]),
+    )
+    chart_columns[0].plotly_chart(
+        roc_figure, width="stretch", key="evaluation_roc_curve"
+    )
+
+    baseline = float(precision_recall["baseline_precision"])
+    chart_columns[1].markdown("##### Precision-recall curve")
+    chart_columns[1].caption(
+        f"Held-out MHIST agreement-proxy test split (n={sample_count:,}); "
+        f"Review First prevalence is {baseline:.1%}."
+    )
+    pr_figure = go.Figure()
+    pr_figure.add_trace(
+        go.Scatter(
+            x=precision_recall["recall"],
+            y=precision_recall["precision"],
+            mode="lines",
+            name=f"Head (AP {float(overall['average_precision']):.3f})",
+            line=dict(color="#d97706", width=3),
+            hovertemplate="Recall %{x:.3f}<br>Precision %{y:.3f}<extra></extra>",
+        )
+    )
+    pr_figure.add_trace(
+        go.Scatter(
+            x=[0.0, 1.0],
+            y=[baseline, baseline],
+            mode="lines",
+            name=f"Class prevalence ({baseline:.1%})",
+            line=dict(color="#94a3b8", width=2, dash="dash"),
+            hoverinfo="skip",
+        )
+    )
+    pr_figure.update_layout(
+        height=360,
+        margin=dict(l=20, r=20, t=45, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
+        xaxis=dict(title="Recall", range=[0.0, 1.0]),
+        yaxis=dict(title="Precision", range=[0.0, 1.0]),
+    )
+    chart_columns[1].plotly_chart(
+        pr_figure, width="stretch", key="evaluation_precision_recall_curve"
+    )
+    st.caption(
+        "These curves evaluate a held-out annotator-agreement proxy, not disease or "
+        "cancer classification. Precision-recall is especially useful here because "
+        f"Review First represents {baseline:.1%} of the test split."
+    )
+
+
+def _embedding_for_projection(record, review: dict[str, object]) -> tuple[float, ...] | None:
+    reviewed = bool(review.get("reviewed", False))
+    if reviewed and "embedding_at_review" in review:
+        raw_embedding = review.get("embedding_at_review")
+    else:
+        raw_embedding = getattr(record.attention, "embedding", None)
+    if raw_embedding is None:
+        return None
+    try:
+        values = tuple(float(value) for value in raw_embedding)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if len(values) != 1024 or not all(math.isfinite(value) for value in values):
+        return None
+    return values
+
+
+def _projection_source_label(record, review: dict[str, object]) -> str:
+    reviewed = bool(review.get("reviewed", False))
+    method = str(
+        review.get("priority_method_at_review")
+        if reviewed and "priority_method_at_review" in review
+        else getattr(record.triage, "priority_method", "deterministic")
+    )
+    fallback_reason = (
+        review.get("priority_fallback_reason_at_review")
+        if reviewed and "priority_fallback_reason_at_review" in review
+        else getattr(record.triage, "fallback_reason", None)
+    )
+    normalized = method.casefold().replace("-", "_").replace(" ", "_")
+    if "quality" in normalized:
+        return "Quality gate"
+    if "experimental" in normalized or "review_head" in normalized:
+        return "Experimental head"
+    if fallback_reason is not None and str(fallback_reason).strip():
+        return "Deterministic runtime fallback"
+    return "Deterministic rule"
+
+
+def _projection_model_label(record, review: dict[str, object]) -> str:
+    reviewed = bool(review.get("reviewed", False))
+    value = (
+        review.get("embedding_model_at_review")
+        if reviewed and "embedding_model_at_review" in review
+        else getattr(record.attention, "embedding_model", None)
+    )
+    return str(value or "Unknown embedding model")
+
+
+def _embedding_scatter_figure(
+    rows: list[dict[str, object]],
+    *,
+    color_field: str,
+    title: str,
+    subtitle: str,
+):
+    palette = {
+        REVIEW_FIRST: "#2563eb",
+        NEEDS_BETTER_IMAGE: "#d97706",
+        LOWER_PRIORITY: "#7c3aed",
+        "Awaiting review": "#94a3b8",
+        UNKNOWN_OR_OTHER_DOMAIN: "#d97706",
+        MHIST_LIKE_DOMAIN: "#2563eb",
+        "Experimental head": "#2563eb",
+        "Deterministic runtime fallback": "#d97706",
+        "Deterministic rule": "#7c3aed",
+        "Quality gate": "#64748b",
+    }
+    symbols = ("circle", "diamond", "square", "triangle-up", "cross")
+    categories = list(dict.fromkeys(str(row[color_field]) for row in rows))
+    figure = go.Figure()
+    for category_index, category in enumerate(categories):
+        category_rows = [row for row in rows if str(row[color_field]) == category]
+        figure.add_trace(
+            go.Scattergl(
+                x=[row["x"] for row in category_rows],
+                y=[row["y"] for row in category_rows],
+                mode="markers",
+                name=category,
+                marker=dict(
+                    color=palette.get(category, "#0f766e"),
+                    symbol=symbols[category_index % len(symbols)],
+                    size=10,
+                    line=dict(color="#e2e8f0", width=0.8),
+                    opacity=0.82,
+                ),
+                customdata=[
+                    [
+                        row["filename"],
+                        row["review_status"],
+                        row["effective_priority"],
+                        row["proxy_score"],
+                    ]
+                    for row in category_rows
+                ],
+                hovertemplate=(
+                    "%{customdata[0]}<br>%{customdata[1]}<br>Effective priority: "
+                    "%{customdata[2]}<br>Agreement-proxy score: %{customdata[3]}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+    figure.update_layout(
+        title=f"{title}<br><sup>{subtitle}</sup>",
+        height=470,
+        margin=dict(l=20, r=20, t=80, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
+        xaxis=dict(title="t-SNE dimension 1", showgrid=False, zeroline=False),
+        yaxis=dict(title="t-SNE dimension 2", showgrid=False, zeroline=False),
+    )
+    return figure
+
+
+def _render_embedding_projection(
+    batch: BatchResult,
+    reviews: dict[str, dict[str, object]],
+    domain_label: str,
+) -> None:
+    st.markdown("#### UNI embedding projection")
+    candidates: list[tuple[object, dict[str, object], tuple[float, ...], str]] = []
+    excluded = 0
+    for record in batch.records:
+        review = reviews.get(record.image_id, {})
+        embedding = _embedding_for_projection(record, review)
+        if embedding is None:
+            excluded += 1
+            continue
+        candidates.append((record, review, embedding, _projection_model_label(record, review)))
+
+    st.caption(
+        f"{len(candidates)} of {len(batch.records)} valid images have a finite "
+        f"1,024-value UNI embedding; {excluded} are excluded from this view."
+    )
+    if not candidates:
+        st.info("No valid UNI embeddings are available for a 2D projection.")
+        return
+    model_labels = sorted({candidate[3] for candidate in candidates})
+    if len(model_labels) != 1:
+        st.warning(
+            "The batch contains embeddings from different model identities, so they are "
+            "not projected together: " + ", ".join(model_labels)
+        )
+        return
+    embeddings = tuple(candidate[2] for candidate in candidates)
+    try:
+        with st.spinner("Computing the current-batch t-SNE projection..."):
+            projection = _project_embeddings_cached(
+                embeddings, EMBEDDING_PROJECTION_CACHE_VERSION
+            )
+    except ProjectionUnavailable as exc:
+        st.info(str(exc))
+        return
+    except Exception as exc:
+        st.warning(f"The t-SNE projection could not be generated ({type(exc).__name__}).")
+        return
+
+    rows: list[dict[str, object]] = []
+    for (record, review, _embedding, _model_label), (x_value, y_value) in zip(
+        candidates, projection.coordinates, strict=True
+    ):
+        reviewed = bool(review.get("reviewed", False))
+        selected_priority = str(review.get("priority", ""))
+        effective_priority = (
+            selected_priority
+            if selected_priority in PRIORITIES
+            else record.triage.suggested_priority
+        )
+        score = record.triage.review_first_score
+        score_label = (
+            f"{float(score):.3f}"
+            if score is not None and math.isfinite(float(score))
+            else "N/A"
+        )
+        rows.append(
+            {
+                "x": x_value,
+                "y": y_value,
+                "filename": record.display_name,
+                "review_status": "Reviewed" if reviewed else "Awaiting review",
+                "effective_priority": effective_priority,
+                "proxy_score": score_label,
+                "reviewer_priority": effective_priority if reviewed else "Awaiting review",
+                "domain_declaration": domain_label,
+                "priority_source": _projection_source_label(record, review),
+            }
+        )
+
+    st.caption(
+        f"{projection.method}; n={projection.sample_count}, perplexity "
+        f"{projection.perplexity:.2f}, pre-reduced to {projection.reduced_dimension} "
+        f"dimensions. Coordinates are batch-relative and descriptive only."
+    )
+    if go is None:
+        st.dataframe(rows, hide_index=True, width="stretch")
+        return
+
+    views = (
+        (
+            "Reviewer-confirmed priority",
+            "reviewer_priority",
+            "UNI embedding projection by reviewer-confirmed priority",
+            "Awaiting images remain explicitly unconfirmed",
+        ),
+        (
+            "Domain declaration",
+            "domain_declaration",
+            "UNI embedding projection by domain declaration",
+            "Batch-level reviewer declaration; tissue is not inferred automatically",
+        ),
+        (
+            "Model / fallback source",
+            "priority_source",
+            "UNI embedding projection by priority source",
+            "Structured experimental, deterministic, fallback, and quality-gate provenance",
+        ),
+    )
+    view_tabs = st.tabs([view[0] for view in views])
+    for tab, (_tab_label, color_field, title, subtitle) in zip(
+        view_tabs, views, strict=True
+    ):
+        with tab:
+            st.plotly_chart(
+                _embedding_scatter_figure(
+                    rows,
+                    color_field=color_field,
+                    title=title,
+                    subtitle=subtitle,
+                ),
+                width="stretch",
+                key=f"embedding_projection_{color_field}",
+            )
+    st.caption(
+        "t-SNE axes and distances are not scores, biological classes, diagnostic "
+        "evidence, or proof of meaningful clusters. Adding images can change the layout."
+    )
+
+
 def _render_model_evaluation(review_model_status) -> None:
     st.subheader("MHIST Annotator-Agreement Proxy Evaluation — Not Cancer Accuracy")
     st.warning(
@@ -521,6 +893,8 @@ def _render_model_evaluation(review_model_status) -> None:
     predicted_fraction = float(overall["predicted_review_first_fraction"])
     third[1].metric("Predicted Review First queue", predicted_count)
     third[2].metric("Predicted queue fraction", f"{predicted_fraction:.1%}")
+
+    _render_evaluation_curves(overall)
 
     matrix = overall["confusion_matrix"]
     values = matrix["values"]
@@ -602,8 +976,10 @@ def _render_operational_dashboard(
         reviews,
         domain_declaration=domain_label,
         screening_seconds_per_image=screening_seconds,
+        embedding_expected=use_uni,
     )
     st.subheader("Operational Dashboard")
+    st.markdown("#### Progress and queue")
     first = st.columns(4)
     first[0].metric("Total files uploaded", batch.uploaded_count)
     first[1].metric("Valid images", metrics.total_images)
@@ -617,20 +993,10 @@ def _render_operational_dashboard(
         metrics.effective_priority_counts[NEEDS_BETTER_IMAGE],
     )
     second[3].metric(LOWER_PRIORITY, metrics.effective_priority_counts[LOWER_PRIORITY])
-    third = st.columns(3)
-    third[0].metric("Image-quality passes", metrics.quality_pass_count)
-    third[1].metric("Skipped or failed files", metrics.skipped_count)
-    third[2].metric(
-        "Estimated time avoided reviewing unusable images",
-        f"{metrics.estimated_time_avoided_seconds / 60.0:.1f} min",
-    )
-    st.caption(
-        f"The time estimate uses {metrics.screening_seconds_per_image:.0f} seconds per "
-        "unusable image and includes only Needs Better Image plus skipped/failed inputs. "
-        "It is user-configured, not measured workflow efficiency."
-    )
-
-    st.markdown("#### Image Quality")
+    st.markdown("#### Quality gate")
+    quality_summary = st.columns(2)
+    quality_summary[0].metric("Images passing quality checks", metrics.quality_pass_count)
+    quality_summary[1].metric("Corrupted or skipped files", metrics.skipped_count)
     issue_labels = {
         "blur": "Blur failures",
         "small_dimensions": "Small-dimension failures",
@@ -646,22 +1012,31 @@ def _render_operational_dashboard(
         metrics.quality_advisory_counts.get("possible_edge_truncation", 0),
     )
 
-    st.markdown("#### Prototype Model Summary")
+    st.markdown("#### Model pipeline health")
     st.write(
         f"**Experimental head:** {'Enabled' if use_review_model else 'Disabled'}  •  "
         f"**UNI feature visualization:** {'Enabled' if use_uni else 'Disabled'}"
     )
-    model_columns = st.columns(6)
-    model_columns[0].metric("UNI embeddings generated", metrics.embedding_success_count)
-    model_columns[1].metric(
+    model_columns = st.columns(5)
+    model_columns[0].metric("UNI embedding successes", metrics.embedding_success_count)
+    model_columns[1].metric("UNI embedding failures", metrics.embedding_failure_count)
+    model_columns[2].metric(
+        "UNI not attempted", metrics.embedding_not_attempted_count
+    )
+    model_columns[3].metric(
         "Experimental-head predictions", metrics.experimental_model_prediction_count
     )
-    model_columns[2].metric(
-        "Deterministic predictions", metrics.deterministic_prediction_count
+    model_columns[4].metric(
+        "Deterministic rule outputs", metrics.deterministic_prediction_count
     )
-    model_columns[3].metric("Quality-gated images", metrics.quality_gate_count)
-    model_columns[4].metric("Runtime fallbacks", metrics.runtime_fallback_count)
-    model_columns[5].metric("Domain warnings", metrics.domain_warning_count)
+    pipeline_columns = st.columns(4)
+    pipeline_columns[0].metric(
+        "Deterministic fallback predictions",
+        metrics.deterministic_fallback_prediction_count,
+    )
+    pipeline_columns[1].metric("Quality-gated images", metrics.quality_gate_count)
+    pipeline_columns[2].metric("Runtime fallback events", metrics.runtime_fallback_count)
+    pipeline_columns[3].metric("Out-of-domain warnings", metrics.domain_warning_count)
     if metrics.domain_warning_count:
         st.warning(
             f"{metrics.domain_warning_count} model-scored image(s) have an unknown or "
@@ -675,11 +1050,19 @@ def _render_operational_dashboard(
         )
         if go is not None:
             histogram = go.Figure(
-                data=go.Histogram(x=list(metrics.proxy_scores), nbinsx=10)
+                data=go.Histogram(
+                    x=list(metrics.proxy_scores),
+                    nbinsx=10,
+                    marker=dict(color="#2563eb", line=dict(color="#1e3a8a", width=1)),
+                )
             )
             histogram.update_layout(
+                title=(
+                    "Experimental agreement-proxy score distribution"
+                    f"<br><sup>Current batch; n={metrics.proxy_score_count}</sup>"
+                ),
                 height=280,
-                margin=dict(l=20, r=20, t=20, b=20),
+                margin=dict(l=20, r=20, t=70, b=20),
                 xaxis_title="Experimental agreement-proxy score",
                 yaxis_title="Images",
             )
@@ -694,8 +1077,36 @@ def _render_operational_dashboard(
     else:
         st.info("No experimental proxy scores are available in this batch.")
 
-    st.markdown("#### Human Review Performance")
-    agreement_columns = st.columns(6)
+    st.markdown("#### Domain context")
+    domain_columns = st.columns(2)
+    domain_columns[0].metric(
+        UNKNOWN_OR_OTHER_DOMAIN,
+        metrics.domain_declaration_counts[UNKNOWN_OR_OTHER_DOMAIN],
+    )
+    domain_columns[1].metric(
+        MHIST_LIKE_DOMAIN,
+        metrics.domain_declaration_counts[MHIST_LIKE_DOMAIN],
+    )
+    st.caption(
+        "Counts cover valid images in the current batch. The declaration is batch-level, "
+        "reviewer-supplied, and not inferred from image content."
+    )
+
+    _render_embedding_projection(batch, reviews, domain_label)
+
+    st.markdown("#### Time estimate")
+    st.metric(
+        "Estimated time avoided reviewing unusable images",
+        f"{metrics.estimated_time_avoided_seconds / 60.0:.1f} min",
+    )
+    st.caption(
+        f"Estimate = (Needs Better Image + skipped/failed files) x "
+        f"{metrics.screening_seconds_per_image:.0f} configured seconds per image. "
+        "It is not measured workflow efficiency."
+    )
+
+    st.markdown("#### Review agreement")
+    agreement_columns = st.columns(3)
     agreement_columns[0].metric("Suggestions confirmed", metrics.suggestion_confirmed_count)
     agreement_columns[1].metric("Suggestions overridden", metrics.suggestion_overridden_count)
     agreement_columns[2].metric(
@@ -704,14 +1115,23 @@ def _render_operational_dashboard(
         if metrics.suggestion_agreement_percentage is None
         else f"{metrics.suggestion_agreement_percentage:.1f}%",
     )
-    agreement_columns[3].metric("Model-reviewed images", metrics.model_reviewed_count)
-    agreement_columns[4].metric("Model overrides", metrics.model_overridden_count)
-    agreement_columns[5].metric(
+    model_agreement_columns = st.columns(4)
+    model_agreement_columns[0].metric(
+        "Experimental-head reviews", metrics.model_reviewed_count
+    )
+    model_agreement_columns[1].metric(
+        "Experimental suggestions confirmed", metrics.model_confirmed_count
+    )
+    model_agreement_columns[2].metric(
+        "Experimental suggestions overridden", metrics.model_overridden_count
+    )
+    model_agreement_columns[3].metric(
         "Model–reviewer agreement",
         "N/A"
         if metrics.model_agreement_percentage is None
         else f"{metrics.model_agreement_percentage:.1f}%",
     )
+    st.markdown("##### Experimental-head agreement by suggested priority")
     st.dataframe(
         [
             {
@@ -725,10 +1145,14 @@ def _render_operational_dashboard(
                     else f"{row.agreement_percentage:.1f}%"
                 ),
             }
-            for row in metrics.agreement_by_suggested_priority
+            for row in metrics.model_agreement_by_suggested_priority
         ],
         hide_index=True,
         width="stretch",
+    )
+    st.caption(
+        "Only completed reviews whose saved suggestion came from the experimental head "
+        "are included in the reviewer-model agreement table."
     )
     _render_skipped_files(batch)
 
@@ -738,10 +1162,26 @@ def _render_batch_table(
     ordered_records: list,
     reviews: dict[str, dict[str, object]],
 ) -> None:
-    st.subheader("Batch Results")
+    st.subheader("Per-image statistics")
     rows = []
     for record in ordered_records:
         state = reviews[record.image_id]
+        selected_priority = str(state.get("priority", ""))
+        effective_priority = (
+            selected_priority
+            if selected_priority in PRIORITIES
+            else record.triage.suggested_priority
+        )
+        score = record.triage.review_first_score
+        proxy_score = (
+            f"{float(score):.3f}"
+            if score is not None and math.isfinite(float(score))
+            else "N/A"
+        )
+        blocking_codes = tuple(getattr(record.quality, "issue_codes", ()) or ())
+        advisory_codes = tuple(getattr(record.quality, "advisory_codes", ()) or ())
+        quality_codes = [f"blocking:{code}" for code in blocking_codes]
+        quality_codes.extend(f"advisory:{code}" for code in advisory_codes)
         rows.append(
             {
                 "Filename": record.display_name,
@@ -758,8 +1198,18 @@ def _render_batch_table(
                 "Attention source": record.attention.provider_name,
                 "Priority source": record.triage.priority_source,
                 "Suggested priority": record.triage.suggested_priority,
-                "Current priority": state["priority"],
-                "Reviewed": "Yes" if state["reviewed"] else "No",
+                "Effective reviewer priority": effective_priority,
+                "Queue sort key": priority_sort_key(effective_priority) + 1,
+                "Experimental agreement-proxy score": proxy_score,
+                "Quality flags/codes": ", ".join(quality_codes) if quality_codes else "None",
+                "Review status": "Reviewed" if state.get("reviewed", False) else "Awaiting",
+                "Case/slide group ID": str(state.get("group_id", "")).strip()
+                or "Ungrouped",
+                "Override status": (
+                    "Overridden"
+                    if bool(state.get("priority_overridden", False))
+                    else "Not overridden"
+                ),
             }
         )
     st.dataframe(rows, hide_index=True, width="stretch")
@@ -1092,7 +1542,7 @@ def _render_review_queue(
             st.success("Queue complete — every valid image is marked reviewed.")
         else:
             st.info("No images match the current queue filters.")
-        with st.expander("Batch results", expanded=False):
+        with st.expander("Per-image statistics", expanded=False):
             _render_batch_table(batch, ordered_records, reviews)
         _render_review_export(
             batch, reviews, batch_fingerprint, domain_context=domain_context
@@ -1148,7 +1598,7 @@ def _render_review_queue(
         ),
         None,
     )
-    with st.expander("Batch results", expanded=False):
+    with st.expander("Per-image statistics", expanded=False):
         _render_batch_table(batch, ordered_records, reviews)
     _render_image_detail(
         record_by_id[selected_id],

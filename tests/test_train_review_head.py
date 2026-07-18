@@ -40,6 +40,18 @@ class TrainReviewHeadTests(unittest.TestCase):
         self.assertEqual([item["queue_fraction"] for item in captures], [0.1, 0.25, 0.5])
         self.assertEqual([item["queue_size"] for item in captures], [1, 1, 2])
         self.assertEqual([item["captured_review_first_count"] for item in captures], [1, 1, 2])
+        roc = metrics["roc_curve"]
+        self.assertEqual(roc["positive_class"], "Review First")
+        self.assertEqual(roc["false_positive_rate"][0], 0.0)
+        self.assertEqual(roc["true_positive_rate"][0], 0.0)
+        self.assertEqual(roc["false_positive_rate"][-1], 1.0)
+        self.assertEqual(roc["true_positive_rate"][-1], 1.0)
+        precision_recall = metrics["precision_recall_curve"]
+        self.assertEqual(precision_recall["positive_class"], "Review First")
+        self.assertAlmostEqual(precision_recall["baseline_precision"], 2 / 3)
+        self.assertEqual(
+            len(precision_recall["precision"]), len(precision_recall["recall"])
+        )
 
     def test_queue_capture_is_stable_for_tied_scores(self):
         truth = np.asarray(["Review First", "Lower Priority", "Review First", "Lower Priority"])
