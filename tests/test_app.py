@@ -11,6 +11,7 @@ import zipfile
 from PIL import Image, ImageDraw
 from streamlit.testing.v1 import AppTest
 
+from app import THEME_DARK_BACKGROUND, UI_PALETTE
 from pathology_ai.pipeline import _stable_image_id
 from pathology_ai.review_model import get_review_model_status
 from pathology_ai.triage import LOWER_PRIORITY, REVIEW_FIRST
@@ -60,6 +61,49 @@ def _dataframe_with_column(app: AppTest, column: str):
     return next(frame.value for frame in app.dataframe if column in frame.value.columns)
 
 
+def _relative_luminance(hex_color: str) -> float:
+    color = hex_color.lstrip("#")
+    channels = tuple(int(color[index : index + 2], 16) / 255 for index in (0, 2, 4))
+    linear_channels = tuple(
+        channel / 12.92
+        if channel <= 0.04045
+        else ((channel + 0.055) / 1.055) ** 2.4
+        for channel in channels
+    )
+    return (
+        0.2126 * linear_channels[0]
+        + 0.7152 * linear_channels[1]
+        + 0.0722 * linear_channels[2]
+    )
+
+
+def _contrast_ratio(first: str, second: str) -> float:
+    first_luminance = _relative_luminance(first)
+    second_luminance = _relative_luminance(second)
+    lighter, darker = sorted((first_luminance, second_luminance), reverse=True)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+class PaletteContrastTests(unittest.TestCase):
+    def test_filled_palette_colors_meet_aa_against_dark_theme(self) -> None:
+        self.assertEqual(UI_PALETTE["accent"], "#00C0F2")
+        self.assertEqual(UI_PALETTE["priority_high"], "#FF4B4B")
+        self.assertEqual(UI_PALETTE["priority_medium"], "#FACA2B")
+        self.assertEqual(UI_PALETTE["priority_low"], "#619C74")
+        for color_name, color in UI_PALETTE.items():
+            with self.subTest(color_name=color_name):
+                self.assertGreaterEqual(_contrast_ratio(color, THEME_DARK_BACKGROUND), 4.5)
+
+    def test_priority_multiselect_has_one_rule_per_severity(self) -> None:
+        source = APP_PATH.read_text(encoding="utf-8")
+        for priority in ("Review First", "Needs Better Image", "Lower Priority"):
+            with self.subTest(priority=priority):
+                self.assertIn(
+                    f'[data-testid="stMultiSelect"] [role="button"][aria-label^="{priority},"]',
+                    source,
+                )
+
+
 class StreamlitAppSmokeTests(unittest.TestCase):
     def test_app_starts_with_visible_safety_language(self) -> None:
         app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
@@ -68,6 +112,20 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         self.assertEqual(len(app.file_uploader), 1)
         self.assertTrue(any(item.value == EXPECTED_DISCLAIMER for item in app.warning))
         self.assertTrue(any("Research/Education Prototype" in item.value for item in app.caption))
+        self.assertTrue(
+            {"Model Settings", "Evaluation Limits", "Scope & Limits"}.issubset(
+                {item.label for item in app.expander}
+            )
+        )
+        self.assertTrue(
+            any(
+                "1. Upload" in item.value
+                and "2. Set Priorities" in item.value
+                and "3. Review Images" in item.value
+                and "4. Confirm Decision" in item.value
+                for item in app.markdown
+            )
+        )
         status_messages = [
             item.value for group in (app.success, app.warning, app.caption) for item in group
         ]
@@ -112,6 +170,7 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         self.assertEqual(values["UNI embedding failures"], "0")
         self.assertEqual(values["UNI not attempted"], "3")
         self.assertEqual(values["Unknown or other tissue"], "3")
+        self.assertTrue(any("Filter Queue" in item.value for item in app.markdown))
 
         unsupported_zip = _zip_bytes(
             {"readme.txt": b"none", "table.csv": b"a,b\n1,2"}

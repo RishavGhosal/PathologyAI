@@ -60,6 +60,13 @@ DOMAIN_LABEL_TO_VALUE = {
     UNKNOWN_OR_OTHER_DOMAIN: "unknown_or_other",
     MHIST_LIKE_DOMAIN: "mhist_like_colorectal_polyp",
 }
+THEME_DARK_BACKGROUND = "#0E1117"
+UI_PALETTE = {
+    "accent": "#00C0F2",
+    "priority_high": "#FF4B4B",
+    "priority_medium": "#FACA2B",
+    "priority_low": "#619C74",
+}
 
 
 def _priority_widget_key(record_id: str) -> str:
@@ -71,6 +78,153 @@ st.set_page_config(
     page_icon="🔬",
     layout="wide",
 )
+
+
+def _render_app_styles() -> None:
+    """Render the app's single, theme-derived UI stylesheet."""
+
+    st.markdown(
+        f"""
+        <style>
+        :root {{
+            --accent: {UI_PALETTE["accent"]};
+            --priority-high: {UI_PALETTE["priority_high"]};
+            --priority-medium: {UI_PALETTE["priority_medium"]};
+            --priority-low: {UI_PALETTE["priority_low"]};
+            --on-filled-control: {THEME_DARK_BACKGROUND};
+        }}
+
+        .pathology-workflow {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            align-items: center;
+            margin: 0.15rem 0 1.1rem;
+        }}
+        .pathology-workflow-step {{
+            border: 1px solid rgba(250, 250, 250, 0.28);
+            border-radius: 999px;
+            color: rgba(250, 250, 250, 0.7);
+            font-size: 0.88rem;
+            padding: 0.34rem 0.72rem;
+        }}
+        .pathology-workflow-step--current {{
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--on-filled-control);
+            font-weight: 700;
+        }}
+        .pathology-workflow-step--complete {{
+            border-color: var(--accent);
+            color: #FAFAFA;
+            font-weight: 600;
+        }}
+        .pathology-workflow-arrow {{
+            color: rgba(250, 250, 250, 0.48);
+        }}
+        .pathology-priority-pill {{
+            border-radius: 999px;
+            color: var(--on-filled-control);
+            display: inline-block;
+            font-size: 0.8rem;
+            font-weight: 700;
+            line-height: 1.2;
+            padding: 0.28rem 0.6rem;
+        }}
+        .pathology-priority-pill--high {{ background: var(--priority-high); }}
+        .pathology-priority-pill--medium {{ background: var(--priority-medium); }}
+        .pathology-priority-pill--low {{ background: var(--priority-low); }}
+        [data-testid="stMultiSelect"] [role="button"][aria-label^="Review First,"] {{
+            background: var(--priority-high) !important;
+            color: var(--on-filled-control) !important;
+        }}
+        [data-testid="stMultiSelect"] [role="button"][aria-label^="Needs Better Image,"] {{
+            background: var(--priority-medium) !important;
+            color: var(--on-filled-control) !important;
+        }}
+        [data-testid="stMultiSelect"] [role="button"][aria-label^="Lower Priority,"] {{
+            background: var(--priority-low) !important;
+            color: var(--on-filled-control) !important;
+        }}
+        [data-testid="stMultiSelect"] [role="button"][aria-label^="Review First,"] *,
+        [data-testid="stMultiSelect"] [role="button"][aria-label^="Needs Better Image,"] *,
+        [data-testid="stMultiSelect"] [role="button"][aria-label^="Lower Priority,"] * {{
+            color: var(--on-filled-control) !important;
+            fill: currentColor !important;
+        }}
+        .pathology-priority-summary {{
+            align-items: center;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.45rem;
+            margin: 0.35rem 0;
+        }}
+        [data-testid="stTabs"] [data-testid="stTab"] {{
+            border: 1px solid transparent;
+            border-radius: 0.45rem 0.45rem 0 0;
+            margin-right: 0.25rem;
+            padding: 0 0.8rem;
+        }}
+        [data-testid="stTabs"] [data-testid="stTab"][data-selected] {{
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--on-filled-control);
+            font-weight: 700;
+        }}
+        [data-testid="stButton"] [data-testid="stBaseButton-primary"] {{
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--on-filled-control);
+            font-weight: 700;
+        }}
+        [data-testid="stButton"] [data-testid="stBaseButton-primary"] * {{
+            color: var(--on-filled-control);
+        }}
+        [data-testid="stButton"] [data-testid="stBaseButton-secondary"] {{
+            background: transparent;
+            border: 1px solid rgba(250, 250, 250, 0.62);
+            color: #FAFAFA;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_workflow_tracker(target, current_step: int) -> None:
+    steps = ("Upload", "Set Priorities", "Review Images", "Confirm Decision")
+    parts = []
+    for index, label in enumerate(steps, start=1):
+        state_class = (
+            " pathology-workflow-step--current"
+            if index == current_step
+            else " pathology-workflow-step--complete"
+            if index < current_step
+            else ""
+        )
+        parts.append(
+            f'<span class="pathology-workflow-step{state_class}">{index}. {label}</span>'
+        )
+        if index < len(steps):
+            parts.append('<span class="pathology-workflow-arrow">→</span>')
+    target.markdown(
+        '<div class="pathology-workflow" aria-label="Review workflow">'
+        + "".join(parts)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _priority_pill(priority: str) -> str:
+    class_by_priority = {
+        REVIEW_FIRST: "high",
+        NEEDS_BETTER_IMAGE: "medium",
+        LOWER_PRIORITY: "low",
+    }
+    return (
+        '<span class="pathology-priority-pill pathology-priority-pill--'
+        f'{class_by_priority[priority]}">{priority}</span>'
+    )
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -489,27 +643,27 @@ def _render_skipped_files(batch: BatchResult) -> None:
 
 
 def _render_safety_limitations() -> None:
-    st.markdown("#### Safety and limitations")
-    limitations = [
-        "No cancer classifier is loaded, and no diagnosis is produced.",
-        "Proxy scores are not calibrated probabilities.",
-        "Threshold-dependent metrics apply only to the displayed classification threshold.",
-        "MHIST contains colorectal-polyp images; other tissues are outside the demonstrated domain.",
-        "Patient/case-level split independence could not be independently verified for MHIST.",
-        "Domain status is reviewer-declared, not automatically detected.",
-        (
-            "The app enforces group-ID formatting but cannot determine whether text "
-            "contains identifying information; de-identification is the reviewer's "
-            "responsibility."
-        ),
-        (
-            "The time estimate covers only unusable or failed inputs and does not claim "
-            "that priority ranking saves time."
-        ),
-        "Human review is required for every image.",
-    ]
-    for limitation in limitations:
-        st.write(f"• {limitation}")
+    with st.expander("Safety and limitations", expanded=False):
+        limitations = [
+            "No cancer classifier is loaded, and no diagnosis is produced.",
+            "Proxy scores are not calibrated probabilities.",
+            "Threshold-dependent metrics apply only to the displayed classification threshold.",
+            "MHIST contains colorectal-polyp images; other tissues are outside the demonstrated domain.",
+            "Patient/case-level split independence could not be independently verified for MHIST.",
+            "Domain status is reviewer-declared, not automatically detected.",
+            (
+                "The app enforces group-ID formatting but cannot determine whether text "
+                "contains identifying information; de-identification is the reviewer's "
+                "responsibility."
+            ),
+            (
+                "The time estimate covers only unusable or failed inputs and does not claim "
+                "that priority ranking saves time."
+            ),
+            "Human review is required for every image.",
+        ]
+        for limitation in limitations:
+            st.write(f"• {limitation}")
 
 
 def _render_evaluation_curves(overall: dict[str, object]) -> None:
@@ -868,13 +1022,12 @@ def _render_embedding_projection(
 
 def _render_model_evaluation(review_model_status) -> None:
     st.subheader("MHIST Annotator-Agreement Proxy Evaluation — Not Cancer Accuracy")
-    st.warning(
+    st.caption(
         "These values measure a held-out MHIST annotator-agreement proxy. They do not "
         "measure cancer detection, diagnosis accuracy, or clinical urgency."
     )
     if not review_model_status.ready:
         st.info("Evaluation metrics unavailable because the local prototype head is unavailable.")
-        _render_safety_limitations()
         return
     if not getattr(review_model_status, "evaluation_valid", False):
         evaluation_error = (
@@ -889,14 +1042,12 @@ def _render_model_evaluation(review_model_status) -> None:
             )
         else:
             st.warning(f"{evaluation_error} Inference remains available.")
-        _render_safety_limitations()
         return
     report = getattr(review_model_status, "evaluation_report", {})
     overall = report.get("overall_test_metrics", {})
     threshold = getattr(review_model_status, "decision_threshold", None)
     if threshold is None:
         st.warning("Evaluation metrics unavailable because the classification threshold is missing.")
-        _render_safety_limitations()
         return
 
     top = st.columns(4)
@@ -990,7 +1141,6 @@ def _render_model_evaluation(review_model_status) -> None:
     else:
         st.info("Top-of-queue capture metrics are unavailable.")
 
-    _render_safety_limitations()
 
 
 def _render_operational_dashboard(
@@ -1265,104 +1415,13 @@ def _render_original_resolution(record) -> None:
             st.image(preview, width="content")
 
 
-def _render_image_detail(
+def _render_manual_review_action_panel(
     record,
     reviews: dict[str, dict[str, object]],
     all_records: list,
     next_unreviewed_id: str | None,
 ) -> None:
-    st.divider()
-    st.subheader("Selected Image")
-    metadata_columns = st.columns(4)
-    metadata_columns[0].metric("File type", record.file_type)
-    metadata_columns[1].metric("Width", f"{record.width} px")
-    metadata_columns[2].metric("Height", f"{record.height} px")
-    metadata_columns[3].metric("File size", format_file_size(record.size_bytes))
-    st.caption(record.display_name)
-    for note in record.metadata_notes:
-        if "fallback was used" in note:
-            st.warning(note)
-        else:
-            st.info(note)
-
-    st.markdown("#### Original Image and Model Attention")
-    if record.attention.uses_trained_encoder:
-        if record.triage.is_experimental_model:
-            st.info(
-                "A local pretrained UNI encoder generated this exploratory feature map. "
-                "A separate experimental MHIST agreement-proxy head used the UNI embedding "
-                "for review ordering. Neither output is a diagnosis or clinical conclusion."
-            )
-        else:
-            st.info(
-                "A local pretrained UNI encoder generated this exploratory feature-variation "
-                "visualization. It is not a validated clinical attention map. The "
-                "deterministic rule supplied review priority for this image."
-            )
-    elif record.attention.is_demonstration:
-        st.info(
-            "Deterministic demonstration attention — based on image appearance such as "
-            "contrast and edges, not learned pathology features. No trained or validated "
-            "medical model is loaded."
-        )
-    viewer_columns = st.columns(2)
-    with viewer_columns[0]:
-        st.markdown("**Original Image**")
-        render_image_viewer(
-            record.image,
-            f"original_{record.image_id}",
-            "Original image.",
-        )
-    with viewer_columns[1]:
-        st.markdown("**Attention Overlay**")
-        render_image_viewer(
-            record.attention.overlay,
-            f"attention_{record.image_id}",
-            record.attention.overlay_caption,
-        )
-    st.markdown(f"**Plain-language explanation:** {record.attention.explanation}")
-    _render_original_resolution(record)
-
-    quality_column, priority_column = st.columns(2)
-    with quality_column:
-        st.markdown("#### Image Quality")
-        if record.quality.adequate:
-            st.success("Image passes the blocking MVP quality checks.")
-        else:
-            st.warning(f"{NEEDS_BETTER_IMAGE}: quality issues were found.")
-            for reason in record.quality.reasons:
-                st.write(f"• {reason}")
-        for advisory in record.quality.advisories:
-            st.warning(f"Manual quality advisory: {advisory}")
-        with st.expander("Quality check details"):
-            st.write(f"Brightness score: {record.quality.metrics['brightness']:.1f} / 255")
-            st.write(f"Contrast score: {record.quality.metrics['contrast']:.1f}")
-            st.write(f"Edge-sharpness score: {record.quality.metrics['blur_score']:.1f}")
-            st.caption(
-                "These are simple presentation-quality heuristics, not biological or "
-                "clinical measurements."
-            )
-
-    with priority_column:
-        st.markdown("#### Review Priority")
-        state = reviews[record.image_id]
-        st.write(f"**Suggested:** {record.triage.suggested_priority}")
-        st.write(f"**Current reviewer choice:** {state['priority']}")
-        st.write(record.triage.explanation)
-        st.caption(f"Priority source: {record.triage.priority_source}")
-        if record.triage.is_experimental_model:
-            st.caption(
-                "Experimental disagreement-proxy score: "
-                f"{record.triage.review_first_score:.3f}. This is not a calibrated "
-                "probability or clinical confidence."
-            )
-            st.caption(
-                "UNI supplies features; the separate experimental head generates the "
-                "review-order suggestion."
-            )
-        elif record.attention.uses_trained_encoder:
-            st.caption("The experimental priority head was not used for this label.")
-        st.caption("Human Review Required • Priority is review order only.")
+    """Render the existing reviewer inputs directly after the image viewers."""
 
     st.markdown("#### Manual Review")
     review_locked = bool(reviews[record.image_id].get("reviewed", False))
@@ -1386,6 +1445,7 @@ def _render_image_detail(
             "Existing group IDs are never overwritten. One ZIP can contain multiple "
             "cases, so use this only when the uploaded source belongs to one case/slide."
         ),
+        type="secondary",
     )
     group_message = st.session_state.get(f"group_apply_message_{record.image_id}")
     if group_message:
@@ -1400,7 +1460,7 @@ def _render_image_detail(
     st.selectbox(
         "Confirm or override the suggested priority",
         options=PRIORITIES,
-        index=PRIORITIES.index(str(state["priority"])),
+        index=PRIORITIES.index(str(reviews[record.image_id]["priority"])),
         key=_priority_widget_key(record.image_id),
         help="Overrides change review order only; they are not medical conclusions.",
         on_change=_mark_priority_override,
@@ -1423,6 +1483,7 @@ def _render_image_detail(
             key=f"reopen_{record.image_id}",
             on_click=_reopen_review,
             args=(record.image_id,),
+            type="secondary",
         )
     else:
         action_columns = st.columns(2)
@@ -1432,6 +1493,7 @@ def _render_image_detail(
             on_click=_save_review,
             args=(record, record.image_id),
             width="stretch",
+            type="primary",
         )
         action_columns[1].button(
             "Save & next unreviewed",
@@ -1445,10 +1507,132 @@ def _render_image_detail(
                 else "Save this review and open the next unreviewed image matching the current filters."
             ),
             width="stretch",
+            type="primary",
         )
     review_error = st.session_state.get(f"review_error_{record.image_id}")
     if review_error:
         st.error(review_error)
+
+
+def _render_image_detail(
+    record,
+    reviews: dict[str, dict[str, object]],
+    all_records: list,
+    next_unreviewed_id: str | None,
+) -> None:
+    st.divider()
+    st.subheader("Selected Image")
+    metadata_columns = st.columns(4)
+    metadata_columns[0].metric("File type", record.file_type)
+    metadata_columns[1].metric("Width", f"{record.width} px")
+    metadata_columns[2].metric("Height", f"{record.height} px")
+    metadata_columns[3].metric("File size", format_file_size(record.size_bytes))
+    st.caption(record.display_name)
+    for note in record.metadata_notes:
+        if "fallback was used" in note:
+            st.warning(note)
+        else:
+            st.info(note)
+
+    st.markdown("#### Original Image and Model Attention")
+    if record.attention.uses_trained_encoder:
+        if record.triage.is_experimental_model:
+            st.caption(
+                "A local pretrained UNI encoder generated this exploratory feature map. "
+                "A separate experimental MHIST agreement-proxy head used the UNI embedding "
+                "for review ordering. Neither output is a diagnosis or clinical conclusion."
+            )
+        else:
+            st.caption(
+                "A local pretrained UNI encoder generated this exploratory feature-variation "
+                "visualization. It is not a validated clinical attention map. The "
+                "deterministic rule supplied review priority for this image."
+            )
+    elif record.attention.is_demonstration:
+        st.caption(
+            "Deterministic demonstration attention — based on image appearance such as "
+            "contrast and edges, not learned pathology features. No trained or validated "
+            "medical model is loaded."
+        )
+    viewer_columns = st.columns(2)
+    with viewer_columns[0]:
+        st.markdown("**Original Image**")
+        render_image_viewer(
+            record.image,
+            f"original_{record.image_id}",
+            "Original image.",
+        )
+    with viewer_columns[1]:
+        st.markdown("**Attention Overlay**")
+        render_image_viewer(
+            record.attention.overlay,
+            f"attention_{record.image_id}",
+            record.attention.overlay_caption,
+        )
+    st.markdown(f"**Plain-language explanation:** {record.attention.explanation}")
+    _render_original_resolution(record)
+
+    st.markdown("#### Review Priority")
+    state = reviews[record.image_id]
+    st.markdown(
+        '<div class="pathology-priority-summary"><strong>Suggested:</strong>'
+        + _priority_pill(record.triage.suggested_priority)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="pathology-priority-summary"><strong>Current reviewer choice:</strong>'
+        + _priority_pill(str(state["priority"]))
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.write(record.triage.explanation)
+    st.caption(f"Priority source: {record.triage.priority_source}")
+    if record.triage.is_experimental_model:
+        st.caption("Review Priority source: Experimental local proxy head")
+        st.caption(
+            "Trained on an MHIST colorectal-polyp agreement proxy; other tissues "
+            "are out of domain. This is not disease prediction or clinical urgency."
+        )
+        st.caption(
+            "Experimental disagreement-proxy score: "
+            f"{record.triage.review_first_score:.3f}. This is not a calibrated "
+            "probability or clinical confidence."
+        )
+        st.caption(
+            "UNI supplies features; the separate experimental head generates the "
+            "review-order suggestion."
+        )
+    else:
+        st.caption("Review Priority source: Deterministic fallback")
+        if record.attention.uses_trained_encoder:
+            st.caption("The experimental priority head was not used for this label.")
+    st.caption("Human Review Required • Priority is review order only.")
+
+    _render_manual_review_action_panel(
+        record,
+        reviews,
+        all_records,
+        next_unreviewed_id,
+    )
+
+    st.markdown("#### Image Quality")
+    if record.quality.adequate:
+        st.success("Image passes the blocking MVP quality checks.")
+    else:
+        st.warning(f"{NEEDS_BETTER_IMAGE}: quality issues were found.")
+        for reason in record.quality.reasons:
+            st.write(f"• {reason}")
+    for advisory in record.quality.advisories:
+        st.warning(f"Manual quality advisory: {advisory}")
+    with st.expander("Quality check details"):
+        st.write(f"Brightness score: {record.quality.metrics['brightness']:.1f} / 255")
+        st.write(f"Contrast score: {record.quality.metrics['contrast']:.1f}")
+        st.write(f"Edge-sharpness score: {record.quality.metrics['blur_score']:.1f}")
+        st.caption(
+            "These are simple presentation-quality heuristics, not biological or "
+            "clinical measurements."
+        )
     if not record.quality.adequate:
         st.warning(
             "The image-quality warning remains active even if a reviewer chooses a "
@@ -1530,34 +1714,36 @@ def _render_review_queue(
     progress_columns[3].metric("Valid images", total)
     st.progress(reviewed_count / total if total else 0.0)
 
-    filter_columns = st.columns(3)
-    status_filter = filter_columns[0].selectbox(
-        "Review status",
-        options=("Awaiting", "Reviewed", "All"),
-        key=f"queue_status_{batch_fingerprint}",
-    )
-    priority_filter = filter_columns[1].multiselect(
-        "Review priorities",
-        options=PRIORITIES,
-        default=list(PRIORITIES),
-        key=f"queue_priorities_{batch_fingerprint}",
-    )
-    groups = sorted(
-        {
-            str(reviews[record.image_id].get("group_id", "")).strip()
-            for record in ordered_records
-            if str(reviews[record.image_id].get("group_id", "")).strip()
-        }
-    )
-    group_options = ["All groups", "Ungrouped", *groups]
-    group_key = f"queue_group_{batch_fingerprint}"
-    if st.session_state.get(group_key) not in group_options:
-        st.session_state[group_key] = "All groups"
-    group_filter = filter_columns[2].selectbox(
-        "Case/slide group",
-        options=group_options,
-        key=group_key,
-    )
+    with st.container(border=True):
+        st.markdown("#### Filter Queue")
+        filter_columns = st.columns(3)
+        status_filter = filter_columns[0].selectbox(
+            "Review status",
+            options=("Awaiting", "Reviewed", "All"),
+            key=f"queue_status_{batch_fingerprint}",
+        )
+        priority_filter = filter_columns[1].multiselect(
+            "Review priorities",
+            options=PRIORITIES,
+            default=list(PRIORITIES),
+            key=f"queue_priorities_{batch_fingerprint}",
+        )
+        groups = sorted(
+            {
+                str(reviews[record.image_id].get("group_id", "")).strip()
+                for record in ordered_records
+                if str(reviews[record.image_id].get("group_id", "")).strip()
+            }
+        )
+        group_options = ["All groups", "Ungrouped", *groups]
+        group_key = f"queue_group_{batch_fingerprint}"
+        if st.session_state.get(group_key) not in group_options:
+            st.session_state[group_key] = "All groups"
+        group_filter = filter_columns[2].selectbox(
+            "Case/slide group",
+            options=group_options,
+            key=group_key,
+        )
 
     filtered_records = _filter_records(
         ordered_records,
@@ -1612,6 +1798,7 @@ def _render_review_queue(
         on_click=_navigate_queue,
         args=(tuple(selection_options), -1, selection_widget_key),
         width="stretch",
+        type="secondary",
     )
     navigation[1].button(
         "Next",
@@ -1620,6 +1807,7 @@ def _render_review_queue(
         on_click=_navigate_queue,
         args=(tuple(selection_options), 1, selection_widget_key),
         width="stretch",
+        type="secondary",
     )
     navigation[2].markdown(
         f"<div style='text-align:center;padding-top:0.45rem'>Item "
@@ -1652,84 +1840,80 @@ def _render_review_queue(
 
 
 def main() -> None:
+    _render_app_styles()
     st.title("🔬 PathologyAI")
     st.caption("Research/Education Prototype • Review Priority • Human Review Required")
     st.warning(DISCLAIMER)
+    workflow_tracker = st.empty()
+    _render_workflow_tracker(workflow_tracker, current_step=1)
+    _render_safety_limitations()
 
     uni_status = get_uni_provider_status()
     review_model_status = get_review_model_status()
     with st.sidebar:
-        st.header("Prototype Status")
-        if uni_status.ready:
-            st.success(uni_status.summary)
-            use_uni = st.toggle(
-                "Use local UNI feature visualization",
-                value=True,
-                help=(
-                    "Loads the local ViT-L encoder when an image is processed. CPU "
-                    "inference can be slow and uses substantial memory."
-                ),
-            )
-            if use_uni:
-                st.write("**Model Attention source:** Local UNI encoder")
-                st.caption("Exploratory UNI feature variation is enabled.")
+        with st.expander("Model Settings", expanded=False):
+            if uni_status.ready:
+                st.success(uni_status.summary)
+                use_uni = st.toggle(
+                    "Use local UNI feature visualization",
+                    value=True,
+                    help=(
+                        "Loads the local ViT-L encoder when an image is processed. CPU "
+                        "inference can be slow and uses substantial memory."
+                    ),
+                )
+                if use_uni:
+                    st.write("**Model Attention source:** Local UNI encoder")
+                    st.caption("Exploratory UNI feature variation is enabled.")
+                else:
+                    st.write("**Model Attention source:** Deterministic demonstration")
+                    st.caption("UNI was manually disabled for this session.")
             else:
+                use_uni = False
+                st.warning(uni_status.summary)
+                st.caption(uni_status.detail)
                 st.write("**Model Attention source:** Deterministic demonstration")
-                st.caption("UNI was manually disabled for this session.")
-        else:
-            use_uni = False
-            st.warning(uni_status.summary)
-            st.caption(uni_status.detail)
-            st.write("**Model Attention source:** Deterministic demonstration")
-        if use_uni and review_model_status.ready:
-            st.success(review_model_status.summary)
-            use_review_model = st.toggle(
-                "Use experimental MHIST agreement-proxy head",
-                value=True,
-                help=(
-                    "Uses the local quick prototype head with UNI features to suggest "
-                    "Review First or Lower Priority. Image-quality checks remain separate."
-                ),
-            )
-            if use_review_model:
-                st.write("**Review Priority source:** Experimental local proxy head")
-                st.caption(
-                    "Trained on an MHIST colorectal-polyp agreement proxy; other tissues "
-                    "are out of domain. This is not disease prediction or clinical urgency."
+            if use_uni and review_model_status.ready:
+                st.success(review_model_status.summary)
+                use_review_model = st.toggle(
+                    "Use experimental MHIST agreement-proxy head",
+                    value=True,
+                    help=(
+                        "Uses the local quick prototype head with UNI features to suggest "
+                        "Review First or Lower Priority. Image-quality checks remain separate."
+                    ),
                 )
             else:
-                st.write("**Review Priority source:** Deterministic fallback")
-            if review_model_status.metrics:
-                with st.expander("Prototype head evaluation limits"):
-                    metrics = review_model_status.metrics
-                    st.write(
-                        "Official MHIST test split: balanced accuracy "
-                        f"{metrics.get('balanced_accuracy', 0.0):.3f}, ROC-AUC "
-                        f"{metrics.get('roc_auc', 0.0):.3f}, Review First recall "
-                        f"{metrics.get('review_first_recall', 0.0):.3f}."
-                    )
+                use_review_model = False
+                if review_model_status.ready and not use_uni:
                     st.caption(
-                        "These measure a dataset-specific annotator-agreement proxy, not "
-                        "clinical performance. MHIST lacks case/slide group IDs, so "
-                        "patient-level split independence could not be verified."
+                        "Experimental priority head disabled because it requires local UNI features."
                     )
-        else:
-            use_review_model = False
-            if review_model_status.ready and not use_uni:
+                else:
+                    st.warning(
+                        "Experimental priority head unavailable; using deterministic "
+                        "visual-complexity fallback."
+                    )
+                    st.caption(review_model_status.detail)
+        with st.expander("Evaluation Limits", expanded=False):
+            if review_model_status.metrics:
+                metrics = review_model_status.metrics
+                st.write(
+                    "Official MHIST test split: balanced accuracy "
+                    f"{metrics.get('balanced_accuracy', 0.0):.3f}, ROC-AUC "
+                    f"{metrics.get('roc_auc', 0.0):.3f}, Review First recall "
+                    f"{metrics.get('review_first_recall', 0.0):.3f}."
+                )
                 st.caption(
-                    "Experimental priority head disabled because it requires local UNI features."
+                    "These measure a dataset-specific annotator-agreement proxy, not "
+                    "clinical performance. MHIST lacks case/slide group IDs, so "
+                    "patient-level split independence could not be verified."
                 )
+        with st.expander("Scope & Limits", expanded=False):
+            if go is None:
+                st.warning("Plotly is unavailable; the basic image-viewer fallback is active.")
             else:
-                st.warning(
-                    "Experimental priority head unavailable; using deterministic "
-                    "visual-complexity fallback."
-                )
-                st.caption(review_model_status.detail)
-        if go is None:
-            st.warning("Plotly is unavailable; the basic image-viewer fallback is active.")
-        else:
-            st.success("Offline interactive viewer available")
-        with st.expander("MVP scope and limits"):
+                st.success("Offline interactive viewer available")
             st.write(
                 "Supports PNG, JPG/JPEG, TIFF, and ZIP batches. This MVP does not process "
                 "whole-slide formats, make disease predictions, or download model weights. "
@@ -1759,6 +1943,8 @@ def main() -> None:
         st.divider()
         st.caption("PathologyAI • Research/Education Prototype • Human Review Required")
         return
+
+    _render_workflow_tracker(workflow_tracker, current_step=2)
 
     payload_values = tuple(
         (uploaded.name, uploaded.getvalue(), getattr(uploaded, "type", "") or "")
@@ -1807,6 +1993,18 @@ def main() -> None:
         )
 
     reviews = _initialize_review_state(batch)
+    completed_reviews = sum(
+        int(bool(reviews[record.image_id].get("reviewed", False)))
+        for record in batch.records
+    )
+    _render_workflow_tracker(
+        workflow_tracker,
+        current_step=(
+            4
+            if batch.records and completed_reviews == len(batch.records)
+            else 3
+        ),
+    )
     review_tab, operations_tab, evaluation_tab = st.tabs(
         ["Review Queue", "Operational Dashboard", "Model Evaluation & Limits"]
     )
