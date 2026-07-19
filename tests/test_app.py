@@ -316,6 +316,84 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         self.assertTrue(save_next.disabled)
         self.assertIn("current queue filters", save_next.help)
 
+    def test_previous_and_next_navigation_stay_bounded_with_stale_events(self) -> None:
+        valid_png = _image_bytes()
+        names = ("01.png", "02.png", "03.png")
+        image_ids = tuple(
+            _stable_image_id(name, name, valid_png) for name in names
+        )
+        app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
+        if app.toggle:
+            app.toggle[0].set_value(False)
+        app.file_uploader[0].set_value(
+            [(name, valid_png, "image/png") for name in names]
+        )
+        app.run()
+
+        selector = _element_with_label(
+            app.selectbox, "Select an image for detailed review"
+        )
+        self.assertEqual(selector.value, image_ids[0])
+
+        # Simulate a queued Next event whose button was rendered before the
+        # selection reached the upper boundary.  It must read current state at
+        # callback time rather than applying a stale precomputed neighbor.
+        stale_next = _element_with_label(app.button, "Next")
+        app.session_state["selected_image_id"] = image_ids[2]
+        stale_next.click()
+        app.run()
+        selector = _element_with_label(
+            app.selectbox, "Select an image for detailed review"
+        )
+        self.assertEqual(selector.value, image_ids[2])
+        self.assertTrue(_element_with_label(app.button, "Next").disabled)
+
+        # The symmetric stale Previous event must remain at the lower boundary.
+        stale_previous = _element_with_label(app.button, "Previous")
+        app.session_state["selected_image_id"] = image_ids[0]
+        stale_previous.click()
+        app.run()
+        selector = _element_with_label(
+            app.selectbox, "Select an image for detailed review"
+        )
+        self.assertEqual(selector.value, image_ids[0])
+        self.assertTrue(_element_with_label(app.button, "Previous").disabled)
+
+        # Normal navigation remains reversible after visiting either boundary.
+        _element_with_label(app.button, "Next").click()
+        app.run()
+        self.assertEqual(
+            _element_with_label(
+                app.selectbox, "Select an image for detailed review"
+            ).value,
+            image_ids[1],
+        )
+        _element_with_label(app.button, "Next").click()
+        app.run()
+        self.assertEqual(
+            _element_with_label(
+                app.selectbox, "Select an image for detailed review"
+            ).value,
+            image_ids[2],
+        )
+        _element_with_label(app.button, "Previous").click()
+        app.run()
+        self.assertEqual(
+            _element_with_label(
+                app.selectbox, "Select an image for detailed review"
+            ).value,
+            image_ids[1],
+        )
+        _element_with_label(app.button, "Next").click()
+        app.run()
+        self.assertEqual(
+            _element_with_label(
+                app.selectbox, "Select an image for detailed review"
+            ).value,
+            image_ids[2],
+        )
+        self.assertEqual(len(app.exception), 0)
+
     def test_local_evaluation_dashboard_threshold_and_confusion_orientation(self) -> None:
         model_status = get_review_model_status()
         if not model_status.ready or not model_status.evaluation_valid:

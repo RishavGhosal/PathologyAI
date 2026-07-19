@@ -55,10 +55,15 @@ DISCLAIMER = (
 MAX_BROWSER_PREVIEW_SIDE = 1600
 NATIVE_PREVIEW_PIXEL_LIMIT = 4_000_000
 EMBEDDING_PROJECTION_CACHE_VERSION = "l2-tsne-v1"
+PRIORITY_WIDGET_STATE_VERSION = 2
 DOMAIN_LABEL_TO_VALUE = {
     UNKNOWN_OR_OTHER_DOMAIN: "unknown_or_other",
     MHIST_LIKE_DOMAIN: "mhist_like_colorectal_polyp",
 }
+
+
+def _priority_widget_key(record_id: str) -> str:
+    return f"priority_v{PRIORITY_WIDGET_STATE_VERSION}_{record_id}"
 
 
 st.set_page_config(
@@ -211,7 +216,7 @@ def _initialize_review_state(batch: BatchResult) -> dict[str, dict[str, object]]
                 },
             )
         )
-        priority_key = f"priority_{record.image_id}"
+        priority_key = _priority_widget_key(record.image_id)
         notes_key = f"notes_{record.image_id}"
         group_key = f"group_{record.image_id}"
         reviewed_key = f"reviewed_{record.image_id}"
@@ -276,7 +281,7 @@ def _mark_priority_override(record_id: str) -> None:
     if record_id not in reviews:
         return
     state = dict(reviews[record_id])
-    selected = st.session_state.get(f"priority_{record_id}")
+    selected = st.session_state.get(_priority_widget_key(record_id))
     state["priority_overridden"] = selected != state.get("last_suggested_priority")
     state["priority"] = selected
     reviews[record_id] = state
@@ -289,7 +294,7 @@ def _sync_selected_review(record_id: str) -> None:
         return
     state = dict(reviews[record_id])
     state["priority"] = st.session_state.get(
-        f"priority_{record_id}", state.get("priority", LOWER_PRIORITY)
+        _priority_widget_key(record_id), state.get("priority", LOWER_PRIORITY)
     )
     state["notes"] = st.session_state.get(f"notes_{record_id}", state.get("notes", ""))
     state["group_id"] = st.session_state.get(
@@ -305,7 +310,8 @@ def _sync_selected_review(record_id: str) -> None:
 def _review_state_from_widgets(record, reviews: dict[str, dict[str, object]]) -> dict[str, object]:
     state = dict(reviews[record.image_id])
     state["priority"] = st.session_state.get(
-        f"priority_{record.image_id}", state.get("priority", record.triage.suggested_priority)
+        _priority_widget_key(record.image_id),
+        state.get("priority", record.triage.suggested_priority),
     )
     state["notes"] = st.session_state.get(
         f"notes_{record.image_id}", state.get("notes", "")
@@ -379,8 +385,32 @@ def _reopen_review(record_id: str) -> None:
     st.session_state[f"reviewed_{record_id}"] = False
 
 
-def _select_image(image_id: str) -> None:
-    st.session_state["selected_image_id"] = image_id
+def _sync_queue_selection(widget_key: str) -> None:
+    """Copy a manual dropdown selection into the navigation state."""
+
+    selected_id = st.session_state.get(widget_key)
+    if selected_id:
+        st.session_state["selected_image_id"] = selected_id
+
+
+def _navigate_queue(
+    image_ids: tuple[str, ...],
+    direction: int,
+    selection_widget_key: str,
+) -> None:
+    """Move one position from the selection present when the click executes."""
+
+    if not image_ids or direction not in (-1, 1):
+        return
+    selected_id = st.session_state.get("selected_image_id")
+    try:
+        selected_index = image_ids.index(selected_id)
+    except ValueError:
+        selected_index = 0
+    target_index = max(0, min(selected_index + direction, len(image_ids) - 1))
+    target_id = image_ids[target_index]
+    st.session_state["selected_image_id"] = target_id
+    st.session_state[selection_widget_key] = target_id
 
 
 def _apply_group_to_source(record, records: list) -> None:
@@ -1370,7 +1400,8 @@ def _render_image_detail(
     st.selectbox(
         "Confirm or override the suggested priority",
         options=PRIORITIES,
-        key=f"priority_{record.image_id}",
+        index=PRIORITIES.index(str(state["priority"])),
+        key=_priority_widget_key(record.image_id),
         help="Overrides change review order only; they are not medical conclusions.",
         on_change=_mark_priority_override,
         args=(record.image_id,),
@@ -1552,33 +1583,42 @@ def _render_review_queue(
     selection_options = [record.image_id for record in filtered_records]
     if st.session_state.get("selected_image_id") not in selection_options:
         st.session_state["selected_image_id"] = selection_options[0]
+    selection_widget_key = f"selected_image_widget_{batch_fingerprint}"
+    if st.session_state.get(selection_widget_key) != st.session_state["selected_image_id"]:
+        # Keep the dropdown separate from the canonical navigation state. This
+        # lets the buttons update the selection after the dropdown has already
+        # been rendered, then synchronize it safely on the following rerun.
+        st.session_state[selection_widget_key] = st.session_state["selected_image_id"]
     record_by_id = {record.image_id: record for record in ordered_records}
     selected_id = st.selectbox(
         "Select an image for detailed review",
         options=selection_options,
-        key="selected_image_id",
+        key=selection_widget_key,
         format_func=lambda image_id: (
             f"{record_by_id[image_id].display_name} — "
             f"{reviews[image_id]['priority']}"
             f"{' ✓' if reviews[image_id]['reviewed'] else ''}"
         ),
+        on_change=_sync_queue_selection,
+        args=(selection_widget_key,),
     )
+    st.session_state["selected_image_id"] = selected_id
     selected_index = selection_options.index(selected_id)
     navigation = st.columns((1, 1, 2, 1, 1))
     navigation[0].button(
         "Previous",
         disabled=selected_index == 0,
         key=f"previous_{batch_fingerprint}",
-        on_click=_select_image,
-        args=(selection_options[max(selected_index - 1, 0)],),
+        on_click=_navigate_queue,
+        args=(tuple(selection_options), -1, selection_widget_key),
         width="stretch",
     )
     navigation[1].button(
         "Next",
         disabled=selected_index >= len(selection_options) - 1,
         key=f"next_{batch_fingerprint}",
-        on_click=_select_image,
-        args=(selection_options[min(selected_index + 1, len(selection_options) - 1)],),
+        on_click=_navigate_queue,
+        args=(tuple(selection_options), 1, selection_widget_key),
         width="stretch",
     )
     navigation[2].markdown(
