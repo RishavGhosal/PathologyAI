@@ -162,7 +162,7 @@ class ReviewExportTests(unittest.TestCase):
         self.assertEqual(row["embedding_available"], "True")
         self.assertEqual(row["uni_0000"], "0.125")
 
-    def test_export_rejects_missing_group_and_missing_override_reason(self) -> None:
+    def test_export_allows_missing_group_but_rejects_missing_override_reason(self) -> None:
         record = _record("required-fields", None)
         missing_group = {
             "required-fields": {
@@ -172,8 +172,13 @@ class ReviewExportTests(unittest.TestCase):
                 "group_id": "",
             }
         }
-        with self.assertRaisesRegex(ValueError, "group ID is required"):
-            build_review_export_csv([record], missing_group)
+        row = next(
+            csv.DictReader(
+                StringIO(build_review_export_csv([record], missing_group).decode("utf-8"))
+            )
+        )
+        self.assertEqual(row["group_id"], "")
+        self.assertEqual(row["group_id_format_validated"], "False")
 
         missing_reason = {
             "required-fields": {

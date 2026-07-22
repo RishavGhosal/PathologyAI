@@ -26,9 +26,9 @@ class EmbeddingProjectionValidationTests(unittest.TestCase):
         ):
             build_tsne_projection(embeddings)
 
-    def test_wrong_dimension_and_nonfinite_values_are_rejected(self) -> None:
-        with self.assertRaisesRegex(ProjectionUnavailable, "1,024"):
-            build_tsne_projection(tuple(tuple([0.0] * 16) for _ in range(8)))
+    def test_too_few_dimensions_and_nonfinite_values_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ProjectionUnavailable, "at least two"):
+            build_tsne_projection(tuple((0.0,) for _ in range(8)))
 
         bad = np.zeros((8, 1024), dtype=np.float32)
         bad[0, 0] = np.nan

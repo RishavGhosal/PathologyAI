@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from hashlib import sha256
+import json
 import math
 
 import numpy as np
@@ -37,6 +38,10 @@ from pathology_ai.review_export import (
     validate_review_fields,
 )
 from pathology_ai.review_model import get_review_model, get_review_model_status
+from pathology_ai.hibou_provider import (
+    LocalHibouFeatureProvider,
+    get_hibou_provider_status,
+)
 from pathology_ai.triage import (
     LOWER_PRIORITY,
     NEEDS_BETTER_IMAGE,
@@ -231,7 +236,7 @@ def _priority_pill(priority: str) -> str:
 def _process_cached(
     payload_values: tuple[tuple[str, bytes, str], ...],
     provider_cache_key: str,
-    use_uni: bool,
+    provider_kind: str,
     review_model_cache_key: str,
     use_review_model: bool,
 ) -> BatchResult:
@@ -241,7 +246,18 @@ def _process_cached(
         UploadPayload(name=name, data=data, mime_type=mime_type)
         for name, data, mime_type in payload_values
     ]
-    provider = get_attention_provider(prefer_uni=use_uni)
+    # Keep the ordinary UNI/demonstration call compatible with an already-loaded
+    # attention module from an older Streamlit process. Hibou is selected directly
+    # because older versions of get_attention_provider accepted only prefer_uni.
+    if provider_kind == "hibou":
+        hibou_status = get_hibou_provider_status()
+        provider = (
+            LocalHibouFeatureProvider(hibou_status.model_dir)
+            if hibou_status.ready
+            else get_attention_provider(prefer_uni=False)
+        )
+    else:
+        provider = get_attention_provider(prefer_uni=provider_kind == "uni")
     review_model = get_review_model() if use_review_model else None
     return process_uploads(payloads, provider=provider, review_model=review_model)
 
@@ -491,7 +507,7 @@ def _save_review(record, next_image_id: str | None = None) -> None:
         return
     state["reviewed"] = True
     state["reviewed_at_utc"] = datetime.now(timezone.utc).isoformat()
-    state["group_id_format_validated"] = True
+    state["group_id_format_validated"] = bool(str(state.get("group_id", "")).strip())
     state["review_validation_version"] = 1
     state["suggested_priority_at_review"] = record.triage.suggested_priority
     state["priority_source_at_review"] = record.triage.priority_source
@@ -783,6 +799,219 @@ def _render_evaluation_curves(overall: dict[str, object]) -> None:
     )
 
 
+def _render_threshold_explorer(overall: dict[str, object], active_threshold: float) -> None:
+    """Render precomputed held-out proxy queue snapshots for a safe threshold demo."""
+
+    rows = overall.get("threshold_sweep")
+    if not isinstance(rows, list) or not rows:
+        st.info(
+            "Interactive threshold snapshots are unavailable in this evaluation artifact. "
+            "Retrain the local head with the current training script to add them."
+        )
+        return
+    valid_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict) and 0.0 < float(row.get("threshold", 0.0)) < 1.0
+    ]
+    if not valid_rows:
+        st.info("Interactive threshold snapshots are unavailable.")
+        return
+    thresholds = sorted(float(row["threshold"]) for row in valid_rows)
+    default_index = min(
+        range(len(thresholds)), key=lambda index: abs(thresholds[index] - active_threshold)
+    )
+    st.markdown("#### Interactive proxy-score threshold explorer")
+    st.caption(
+        "This changes only the displayed held-out MHIST agreement-proxy queue summary; "
+        "it does not change the active model or represent calibrated probability."
+    )
+    selected_threshold = st.select_slider(
+        "Displayed proxy-score threshold",
+        options=thresholds,
+        value=thresholds[default_index],
+        format_func=lambda value: f"{value:.2f}",
+        key="evaluation_threshold_explorer",
+    )
+    selected = min(
+        valid_rows, key=lambda row: abs(float(row["threshold"]) - selected_threshold)
+    )
+    metrics = st.columns(4)
+    metrics[0].metric("Proxy queue size", int(selected["queue_size"]))
+    metrics[1].metric("Proxy queue fraction", f"{float(selected['queue_fraction']):.1%}")
+    metrics[2].metric("Proxy-label capture", f"{float(selected['capture_fraction']):.1%}")
+    metrics[3].metric("Proxy precision", f"{float(selected['precision']):.1%}")
+
+
+def _render_annotator_agreement_distribution(report: dict[str, object]) -> None:
+    """Show the human-label ambiguity that defines the experimental target."""
+
+    rows = report.get("annotator_agreement_distribution")
+    if not isinstance(rows, list) or not rows:
+        st.info(
+            "The annotator-agreement distribution is unavailable in this evaluation "
+            "artifact. Retrain the local head with the current training script to add it."
+        )
+        return
+    display_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and isinstance(row.get("label"), str)
+        and "sample_count" in row
+        and "proxy_priority" in row
+    ]
+    if not display_rows:
+        st.info("The annotator-agreement distribution is unavailable.")
+        return
+    st.markdown("#### MHIST annotator-agreement distribution")
+    st.caption(
+        "Each image was assessed by seven pathologists. The experimental proxy groups "
+        "4–5 of 7 majority agreement as Review First and 6–7 of 7 as Lower Priority."
+    )
+    if go is None:
+        st.dataframe(display_rows, hide_index=True, width="stretch")
+        return
+    figure = go.Figure()
+    colors = {REVIEW_FIRST: "#2563eb", LOWER_PRIORITY: "#7c3aed"}
+    for proxy_priority in (REVIEW_FIRST, LOWER_PRIORITY):
+        subset = [row for row in display_rows if row["proxy_priority"] == proxy_priority]
+        if not subset:
+            continue
+        figure.add_trace(
+            go.Bar(
+                x=[str(row["label"]) for row in subset],
+                y=[int(row["sample_count"]) for row in subset],
+                name=proxy_priority,
+                marker_color=colors[proxy_priority],
+                customdata=[[float(row.get("fraction", 0.0))] for row in subset],
+                hovertemplate="%{x}<br>Images: %{y}<br>Dataset share: %{customdata[0]:.1%}<extra></extra>",
+            )
+        )
+    figure.update_layout(
+        barmode="stack",
+        height=330,
+        margin=dict(l=20, r=20, t=30, b=20),
+        yaxis=dict(title="MHIST images"),
+        xaxis=dict(title="Largest agreeing annotator group"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
+    )
+    st.plotly_chart(figure, width="stretch", key="mhist_annotator_agreement")
+
+
+def _render_model_card(review_model_status, overall: dict[str, object]) -> None:
+    """Show a compact, source-backed scope panel for public-demo viewers."""
+
+    metadata: dict[str, object] = {}
+    try:
+        loaded = json.loads(review_model_status.metadata_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            metadata = loaded
+    except (OSError, ValueError, TypeError):
+        pass
+    st.markdown("#### Dataset and model card")
+    st.dataframe(
+        [
+            {"Field": "Dataset", "Value": "MHIST colorectal-polyp image patches"},
+            {
+                "Field": "Split",
+                "Value": (
+                    f"Official MHIST train/test partitions: "
+                    f"{int(metadata.get('train_sample_count', 0)):,} train and "
+                    f"{int(overall.get('sample_count', 0)):,} held-out test images"
+                ),
+            },
+            {
+                "Field": "Target",
+                "Value": str(metadata.get("target_definition", "Annotator-agreement proxy")),
+            },
+            {"Field": "Model", "Value": str(metadata.get("model_type", "Local prototype head"))},
+            {
+                "Field": "Limit", "Value": (
+                    "No patient/case/slide IDs were supplied; patient-level split "
+                    "independence cannot be verified."
+                ),
+            },
+            {
+                "Field": "Use", "Value": "Research/education review ordering only; human review required."},
+        ],
+        hide_index=True,
+        width="stretch",
+    )
+
+
+def _render_current_batch_proxy_outcomes(
+    batch: BatchResult,
+    reviews: dict[str, dict[str, object]],
+) -> None:
+    """Show reviewer outcomes across score bands without implying calibration."""
+
+    bin_edges = np.linspace(0.0, 1.0, 11)
+    buckets = [
+        {"label": f"{bin_edges[index]:.1f}–{bin_edges[index + 1]:.1f}", "Confirmed": 0,
+         "Overridden": 0, "Awaiting review": 0}
+        for index in range(len(bin_edges) - 1)
+    ]
+    available = 0
+    reviewed = 0
+    for record in batch.records:
+        if not bool(getattr(record.triage, "is_experimental_model", False)):
+            continue
+        raw_score = getattr(record.triage, "review_first_score", None)
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+            continue
+        available += 1
+        index = min(int(score * 10), 9)
+        review = reviews.get(record.image_id, {})
+        if not bool(review.get("reviewed", False)):
+            outcome = "Awaiting review"
+        else:
+            reviewed += 1
+            outcome = (
+                "Confirmed"
+                if review.get("priority") == record.triage.suggested_priority
+                else "Overridden"
+            )
+        buckets[index][outcome] += 1
+    if not available:
+        return
+    st.markdown("#### Current-batch proxy scores and reviewer outcomes")
+    st.caption(
+        f"{reviewed} of {available} experimental-head outputs have a completed review. "
+        "Score bands describe the current batch only and are not calibration evidence."
+    )
+    if go is None:
+        st.dataframe(buckets, hide_index=True, width="stretch")
+        return
+    figure = go.Figure()
+    for outcome, color in (
+        ("Confirmed", "#2563eb"),
+        ("Overridden", "#d97706"),
+        ("Awaiting review", "#94a3b8"),
+    ):
+        figure.add_trace(
+            go.Bar(
+                x=[bucket["label"] for bucket in buckets],
+                y=[bucket[outcome] for bucket in buckets],
+                name=outcome,
+                marker_color=color,
+            )
+        )
+    figure.update_layout(
+        barmode="stack",
+        height=330,
+        margin=dict(l=20, r=20, t=30, b=20),
+        yaxis=dict(title="Current-batch images"),
+        xaxis=dict(title="Agreement-proxy score band"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
+    )
+    st.plotly_chart(figure, width="stretch", key="current_batch_proxy_outcomes")
+
+
 def _embedding_for_projection(record, review: dict[str, object]) -> tuple[float, ...] | None:
     reviewed = bool(review.get("reviewed", False))
     if reviewed and "embedding_at_review" in review:
@@ -795,7 +1024,7 @@ def _embedding_for_projection(record, review: dict[str, object]) -> tuple[float,
         values = tuple(float(value) for value in raw_embedding)
     except (TypeError, ValueError, OverflowError):
         return None
-    if len(values) != 1024 or not all(math.isfinite(value) for value in values):
+    if len(values) < 2 or not all(math.isfinite(value) for value in values):
         return None
     return values
 
@@ -901,7 +1130,7 @@ def _render_embedding_projection(
     reviews: dict[str, dict[str, object]],
     domain_label: str,
 ) -> None:
-    st.markdown("#### UNI embedding projection")
+    st.markdown("#### Local feature-embedding projection")
     candidates: list[tuple[object, dict[str, object], tuple[float, ...], str]] = []
     excluded = 0
     for record in batch.records:
@@ -914,10 +1143,10 @@ def _render_embedding_projection(
 
     st.caption(
         f"{len(candidates)} of {len(batch.records)} valid images have a finite "
-        f"1,024-value UNI embedding; {excluded} are excluded from this view."
+        f"model embedding; {excluded} are excluded from this view."
     )
     if not candidates:
-        st.info("No valid UNI embeddings are available for a 2D projection.")
+        st.info("No valid local-model embeddings are available for a 2D projection.")
         return
     model_labels = sorted({candidate[3] for candidate in candidates})
     if len(model_labels) != 1:
@@ -983,19 +1212,19 @@ def _render_embedding_projection(
         (
             "Reviewer-confirmed priority",
             "reviewer_priority",
-            "UNI embedding projection by reviewer-confirmed priority",
+            "Local feature-embedding projection by reviewer-confirmed priority",
             "Awaiting images remain explicitly unconfirmed",
         ),
         (
             "Domain declaration",
             "domain_declaration",
-            "UNI embedding projection by domain declaration",
+            "Local feature-embedding projection by domain declaration",
             "Batch-level reviewer declaration; tissue is not inferred automatically",
         ),
         (
             "Model / fallback source",
             "priority_source",
-            "UNI embedding projection by priority source",
+            "Local feature-embedding projection by priority source",
             "Structured experimental, deterministic, fallback, and quality-gate provenance",
         ),
     )
@@ -1050,6 +1279,9 @@ def _render_model_evaluation(review_model_status) -> None:
         st.warning("Evaluation metrics unavailable because the classification threshold is missing.")
         return
 
+    _render_model_card(review_model_status, overall)
+    _render_annotator_agreement_distribution(report)
+
     top = st.columns(4)
     top[0].metric("Classification threshold used", f"{threshold:.3f}")
     top[1].metric("Held-out test images", int(overall["sample_count"]))
@@ -1076,6 +1308,7 @@ def _render_model_evaluation(review_model_status) -> None:
     third[2].metric("Predicted queue fraction", f"{predicted_fraction:.1%}")
 
     _render_evaluation_curves(overall)
+    _render_threshold_explorer(overall, float(threshold))
 
     matrix = overall["confusion_matrix"]
     values = matrix["values"]
@@ -1148,7 +1381,7 @@ def _render_operational_dashboard(
     reviews: dict[str, dict[str, object]],
     domain_label: str,
     screening_seconds: float,
-    use_uni: bool,
+    feature_provider_enabled: bool,
     use_review_model: bool,
 ) -> None:
     metrics = build_operational_metrics(
@@ -1156,7 +1389,7 @@ def _render_operational_dashboard(
         reviews,
         domain_declaration=domain_label,
         screening_seconds_per_image=screening_seconds,
-        embedding_expected=use_uni,
+        embedding_expected=feature_provider_enabled,
     )
     st.subheader("Operational Dashboard")
     st.markdown("#### Progress and queue")
@@ -1195,13 +1428,13 @@ def _render_operational_dashboard(
     st.markdown("#### Model pipeline health")
     st.write(
         f"**Experimental head:** {'Enabled' if use_review_model else 'Disabled'}  •  "
-        f"**UNI feature visualization:** {'Enabled' if use_uni else 'Disabled'}"
+        f"**Local feature exploration:** {'Enabled' if feature_provider_enabled else 'Disabled'}"
     )
     model_columns = st.columns(5)
-    model_columns[0].metric("UNI embedding successes", metrics.embedding_success_count)
-    model_columns[1].metric("UNI embedding failures", metrics.embedding_failure_count)
+    model_columns[0].metric("Model embedding successes", metrics.embedding_success_count)
+    model_columns[1].metric("Model embedding failures", metrics.embedding_failure_count)
     model_columns[2].metric(
-        "UNI not attempted", metrics.embedding_not_attempted_count
+        "Model embedding not attempted", metrics.embedding_not_attempted_count
     )
     model_columns[3].metric(
         "Experimental-head predictions", metrics.experimental_model_prediction_count
@@ -1256,6 +1489,7 @@ def _render_operational_dashboard(
         st.caption("Score distribution is descriptive only and is not a diagnosis output.")
     else:
         st.info("No experimental proxy scores are available in this batch.")
+    _render_current_batch_proxy_outcomes(batch, reviews)
 
     st.markdown("#### Domain context")
     domain_columns = st.columns(2)
@@ -1426,13 +1660,13 @@ def _render_manual_review_action_panel(
     st.markdown("#### Manual Review")
     review_locked = bool(reviews[record.image_id].get("reviewed", False))
     st.text_input(
-        "De-identified case/slide group ID (required to mark reviewed)",
+        "De-identified case/slide group ID (optional)",
         key=f"group_{record.image_id}",
-        placeholder="Example: slide-group-001",
+        placeholder="Example: slide-group-001 (needed for grouped model training)",
         disabled=review_locked,
         help=(
-            "Allowed: 1-64 letters, numbers, hyphens, or underscores. The app validates "
-            "format only and cannot determine whether text contains identifying information."
+            "Optional for review/export. Needed only for later grouped model training. "
+            "When supplied, use 1-64 letters, numbers, hyphens, or underscores."
         ),
     )
     st.button(
@@ -1544,7 +1778,7 @@ def _render_image_detail(
             )
         else:
             st.caption(
-                "A local pretrained UNI encoder generated this exploratory feature-variation "
+                "A local pretrained feature encoder generated this exploratory feature-variation "
                 "visualization. It is not a validated clinical attention map. The "
                 "deterministic rule supplied review priority for this image."
             )
@@ -1653,8 +1887,13 @@ def _render_review_export(
     with st.expander("Export reviewed labels for research training"):
         st.write(
             f"Reviewed images in the current batch: **{reviewed_count}**. The CSV "
-            "contains reviewer labels and locally generated UNI embeddings when "
-            "available. It does not contain raw images, filenames, or local paths."
+            "contains reviewer labels and local model-embedding metadata. Fixed UNI feature "
+            "columns are included when available; other encoders export model metadata for audit. "
+            "It does not contain raw images, filenames, or local paths."
+        )
+        st.caption(
+            "Rows without a case/slide group ID can be exported for audit, but cannot be "
+            "used by the later group-safe training-preparation workflow."
         )
         st.warning(
             "Do not export names, medical record numbers, dates of birth, or other "
@@ -1663,7 +1902,7 @@ def _render_review_export(
         )
         confirmation_key = f"export_deidentified_{batch_fingerprint}"
         confirmed = st.checkbox(
-            "I confirm that reviewer notes and group IDs contain no identifying information.",
+            "I confirm that reviewer notes and any supplied group IDs contain no identifying information.",
             key=confirmation_key,
         )
         try:
@@ -1674,7 +1913,7 @@ def _render_review_export(
             st.error(f"The research export could not be prepared: {exc}")
             return
         st.download_button(
-            "Download reviewed labels and UNI embeddings (CSV)",
+            "Download reviewed labels and embedding metadata (CSV)",
             data=export_data,
             file_name=f"pathologyai_review_labels_{batch_fingerprint[:8]}.csv",
             mime="text/csv",
@@ -1849,30 +2088,40 @@ def main() -> None:
     _render_safety_limitations()
 
     uni_status = get_uni_provider_status()
+    hibou_status = get_hibou_provider_status()
     review_model_status = get_review_model_status()
     with st.sidebar:
         with st.expander("Model Settings", expanded=False):
+            provider_options = [("Deterministic demonstration", "deterministic")]
             if uni_status.ready:
+                provider_options.append(("Local UNI feature exploration", "uni"))
+            if hibou_status.ready:
+                provider_options.append(("Local Hibou-B feature exploration (CPU)", "hibou"))
+            provider_label = st.selectbox(
+                "Feature provider",
+                options=[label for label, _value in provider_options],
+                index=0,
+                help=(
+                    "Feature providers create exploratory image embeddings and variation maps. "
+                    "They do not make pathology findings or diagnoses."
+                ),
+            )
+            provider_kind = dict(provider_options)[provider_label]
+            if provider_kind == "uni":
                 st.success(uni_status.summary)
-                use_uni = st.toggle(
-                    "Use local UNI feature visualization",
-                    value=True,
-                    help=(
-                        "Loads the local ViT-L encoder when an image is processed. CPU "
-                        "inference can be slow and uses substantial memory."
-                    ),
-                )
-                if use_uni:
-                    st.write("**Model Attention source:** Local UNI encoder")
-                    st.caption("Exploratory UNI feature variation is enabled.")
-                else:
-                    st.write("**Model Attention source:** Deterministic demonstration")
-                    st.caption("UNI was manually disabled for this session.")
+                st.caption("UNI exploratory feature variation is enabled.")
+            elif provider_kind == "hibou":
+                st.success(hibou_status.summary)
+                st.caption(hibou_status.detail)
             else:
-                use_uni = False
-                st.warning(uni_status.summary)
-                st.caption(uni_status.detail)
                 st.write("**Model Attention source:** Deterministic demonstration")
+            if not uni_status.ready:
+                st.caption(uni_status.detail)
+            if not hibou_status.ready:
+                st.caption(hibou_status.detail)
+
+            use_uni = provider_kind == "uni"
+            feature_provider_enabled = provider_kind != "deterministic"
             if use_uni and review_model_status.ready:
                 st.success(review_model_status.summary)
                 use_review_model = st.toggle(
@@ -1887,7 +2136,7 @@ def main() -> None:
                 use_review_model = False
                 if review_model_status.ready and not use_uni:
                     st.caption(
-                        "Experimental priority head disabled because it requires local UNI features."
+                        "Experimental priority head is available only with local UNI features."
                     )
                 else:
                     st.warning(
@@ -1917,7 +2166,7 @@ def main() -> None:
             st.write(
                 "Supports PNG, JPG/JPEG, TIFF, and ZIP batches. This MVP does not process "
                 "whole-slide formats, make disease predictions, or download model weights. "
-                "UNI is used only when its local checkpoint is present and the toggle is on."
+                "Optional local feature models are used only when their snapshots are present."
             )
 
     st.subheader("Upload Pathology Images")
@@ -1976,9 +2225,11 @@ def main() -> None:
     )
     domain_context = DOMAIN_LABEL_TO_VALUE[domain_label]
     with st.spinner("Checking files and preparing review-priority suggestions..."):
-        selected_provider_key = (
-            uni_status.cache_key if use_uni else "deterministic-demo:v1"
-        )
+        selected_provider_key = {
+            "uni": uni_status.cache_key,
+            "hibou": hibou_status.cache_key,
+            "deterministic": "deterministic-demo:v1",
+        }[provider_kind]
         selected_review_model_key = (
             review_model_status.cache_key
             if use_review_model
@@ -1987,7 +2238,7 @@ def main() -> None:
         batch = _process_cached(
             payload_values,
             selected_provider_key,
-            use_uni,
+            provider_kind,
             selected_review_model_key,
             use_review_model,
         )
@@ -2028,7 +2279,7 @@ def main() -> None:
             reviews,
             domain_label=domain_label,
             screening_seconds=screening_seconds,
-            use_uni=use_uni,
+            feature_provider_enabled=feature_provider_enabled,
             use_review_model=use_review_model,
         )
     with evaluation_tab:

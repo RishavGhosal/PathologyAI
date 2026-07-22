@@ -166,9 +166,9 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         self.assertEqual(values["Total files uploaded"], "5")
         self.assertEqual(values["Valid images"], "3")
         self.assertEqual(values["Corrupted or skipped files"], "4")
-        self.assertEqual(values["UNI embedding successes"], "0")
-        self.assertEqual(values["UNI embedding failures"], "0")
-        self.assertEqual(values["UNI not attempted"], "3")
+        self.assertEqual(values["Model embedding successes"], "0")
+        self.assertEqual(values["Model embedding failures"], "0")
+        self.assertEqual(values["Model embedding not attempted"], "3")
         self.assertEqual(values["Unknown or other tissue"], "3")
         self.assertTrue(any("Filter Queue" in item.value for item in app.markdown))
 
@@ -210,7 +210,7 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         ).input("student review note")
         _element_with_label(
             app.text_input,
-            "De-identified case/slide group ID (required to mark reviewed)",
+            "De-identified case/slide group ID (optional)",
         ).input("slide-group-001")
         _element_with_label(
             app.selectbox, "Confirm or override the suggested priority"
@@ -231,7 +231,7 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         self.assertEqual(
             _element_with_label(
                 app.text_input,
-                "De-identified case/slide group ID (required to mark reviewed)",
+                "De-identified case/slide group ID (optional)",
             ).value,
             "slide-group-001",
         )
@@ -266,7 +266,7 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         self.assertEqual(per_image.iloc[0]["Review status"], "Reviewed")
         self.assertEqual(per_image.iloc[0]["Case/slide group ID"], "slide-group-001")
 
-    def test_review_requires_group_id(self) -> None:
+    def test_review_without_group_id_remains_exportable(self) -> None:
         valid_png = _image_bytes()
         app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
         if app.toggle:
@@ -277,8 +277,8 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         _element_with_label(app.button, "Save review").click()
         app.run()
 
-        self.assertTrue(any("group ID is required" in item.value for item in app.error))
-        self.assertEqual(_metrics(app)["Reviewed images"], "0")
+        self.assertEqual(len(app.error), 0)
+        self.assertEqual(_metrics(app)["Reviewed images"], "1")
 
     def test_review_override_requires_notes(self) -> None:
         valid_png = _image_bytes()
@@ -294,7 +294,7 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         override = LOWER_PRIORITY if priority.value == REVIEW_FIRST else REVIEW_FIRST
         _element_with_label(
             app.text_input,
-            "De-identified case/slide group ID (required to mark reviewed)",
+            "De-identified case/slide group ID (optional)",
         ).input("slide-group-001")
         priority.set_value(override)
         _element_with_label(app.button, "Save review").click()
@@ -335,7 +335,7 @@ class StreamlitAppSmokeTests(unittest.TestCase):
         app.run()
         _element_with_label(
             app.text_input,
-            "De-identified case/slide group ID (required to mark reviewed)",
+            "De-identified case/slide group ID (optional)",
         ).input("new-group")
         _element_with_label(
             app.button,

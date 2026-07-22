@@ -166,21 +166,34 @@ class DeterministicDemoAttentionProvider:
         )
 
 
-def get_attention_provider(prefer_uni: bool = False) -> AttentionProvider:
+def get_attention_provider(
+    prefer_uni: bool = False,
+    provider_kind: str | None = None,
+) -> AttentionProvider:
     """Return a local provider without downloading weights.
 
-    UNI is opt-in because its ViT-L encoder is large and can be slow on CPU. If
-    the checkpoint or optional packages are unavailable, the deterministic
-    provider keeps the basic application functional.
+    Optional local encoders are opt-in. If their local snapshots or packages
+    are unavailable, the deterministic provider keeps the basic application
+    functional. ``prefer_uni`` remains for compatibility with existing callers.
     """
 
-    if prefer_uni:
+    selected = provider_kind or ("uni" if prefer_uni else "deterministic")
+    if selected == "uni":
         try:
             from .uni_provider import LocalUNIFeatureProvider, get_uni_provider_status
 
             status = get_uni_provider_status()
             if status.ready:
                 return LocalUNIFeatureProvider(status.checkpoint_path)
+        except Exception:
+            pass
+    if selected == "hibou":
+        try:
+            from .hibou_provider import LocalHibouFeatureProvider, get_hibou_provider_status
+
+            status = get_hibou_provider_status()
+            if status.ready:
+                return LocalHibouFeatureProvider(status.model_dir)
         except Exception:
             pass
     return DeterministicDemoAttentionProvider()

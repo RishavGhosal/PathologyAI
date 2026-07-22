@@ -52,6 +52,14 @@ class TrainReviewHeadTests(unittest.TestCase):
         self.assertEqual(
             len(precision_recall["precision"]), len(precision_recall["recall"])
         )
+        sweep = metrics["threshold_sweep"]
+        self.assertEqual(len(sweep), 91)
+        self.assertEqual(sweep[0]["threshold"], 0.05)
+        self.assertEqual(sweep[-1]["threshold"], 0.95)
+        at_half = next(item for item in sweep if item["threshold"] == 0.5)
+        self.assertEqual(at_half["queue_size"], 1)
+        self.assertEqual(at_half["captured_review_first_count"], 1)
+        self.assertEqual(at_half["precision"], 1.0)
 
     def test_queue_capture_is_stable_for_tied_scores(self):
         truth = np.asarray(["Review First", "Lower Priority", "Review First", "Lower Priority"])
@@ -63,3 +71,12 @@ class TrainReviewHeadTests(unittest.TestCase):
         self.assertEqual(captures[0]["captured_review_first_count"], 1)
         self.assertEqual(captures[-1]["queue_size"], 2)
         self.assertEqual(captures[-1]["captured_review_first_count"], 1)
+
+    def test_agreement_distribution_preserves_all_seven_annotator_groups(self):
+        distribution = MODULE.agreement_distribution(np.asarray([4, 4, 5, 6, 7, 7]))
+
+        self.assertEqual([row["majority_agreement"] for row in distribution], [4, 5, 6, 7])
+        self.assertEqual([row["sample_count"] for row in distribution], [2, 1, 1, 2])
+        self.assertEqual(distribution[0]["proxy_priority"], "Review First")
+        self.assertEqual(distribution[-1]["proxy_priority"], "Lower Priority")
+        self.assertAlmostEqual(sum(row["fraction"] for row in distribution), 1.0)

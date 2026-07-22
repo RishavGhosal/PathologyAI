@@ -12,7 +12,6 @@ from typing import Sequence
 import numpy as np
 
 
-UNI_EMBEDDING_DIMENSION = 1024
 MIN_TSNE_SAMPLES = 8
 
 
@@ -46,26 +45,24 @@ def build_tsne_projection(
     try:
         matrix = np.asarray(embeddings, dtype=np.float32)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise ProjectionUnavailable("UNI embeddings could not be converted to numbers.") from exc
-    if matrix.ndim != 2 or matrix.shape[1] != UNI_EMBEDDING_DIMENSION:
-        raise ProjectionUnavailable(
-            f"Each UNI embedding must contain {UNI_EMBEDDING_DIMENSION:,} values."
-        )
+        raise ProjectionUnavailable("Model embeddings could not be converted to numbers.") from exc
+    if matrix.ndim != 2 or matrix.shape[1] < 2:
+        raise ProjectionUnavailable("Each model embedding must contain at least two values.")
     sample_count = int(matrix.shape[0])
     if sample_count < MIN_TSNE_SAMPLES:
         raise ProjectionUnavailable(
-            f"At least {MIN_TSNE_SAMPLES} valid UNI embeddings are required for the "
+            f"At least {MIN_TSNE_SAMPLES} valid model embeddings are required for the "
             f"t-SNE view; this batch has {sample_count}."
         )
     if not np.isfinite(matrix).all():
-        raise ProjectionUnavailable("UNI embeddings must contain only finite values.")
+        raise ProjectionUnavailable("Model embeddings must contain only finite values.")
     norms = np.linalg.norm(matrix, axis=1)
     if np.any(~np.isfinite(norms)) or np.any(norms <= np.finfo(np.float32).eps):
-        raise ProjectionUnavailable("UNI embeddings must have a finite non-zero norm.")
+        raise ProjectionUnavailable("Model embeddings must have a finite non-zero norm.")
     matrix = matrix / norms[:, np.newaxis]
     if not np.any(np.ptp(matrix, axis=0) > 0.0):
         raise ProjectionUnavailable(
-            "The available UNI embeddings are identical, so a 2D projection would be misleading."
+            "The available model embeddings are identical, so a 2D projection would be misleading."
         )
 
     try:

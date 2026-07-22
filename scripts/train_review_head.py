@@ -45,6 +45,7 @@ ALLOWED_LABELS = {REVIEW_FIRST, LOWER_PRIORITY}
 ALLOWED_PARTITIONS = {"train", "test"}
 CLASSIFICATION_THRESHOLD = 0.5
 QUEUE_CAPTURE_FRACTIONS = (0.10, 0.25, 0.50)
+THRESHOLD_SWEEP_VALUES = tuple(np.round(np.arange(0.05, 0.951, 0.01), 2))
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,7 +75,14 @@ def sha256(path: Path) -> str:
 
 def load_embeddings(
     database: Path,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, str]]:
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, str],
+]:
     if not database.is_file():
         raise FileNotFoundError(f"Embedding database not found: {database}")
     with sqlite3.connect(database) as connection:
@@ -84,8 +92,8 @@ def load_embeddings(
         ).fetchone()[0]
         rows = connection.execute(
             """
-            SELECT partition, proxy_priority, source_label, embedding,
-                   embedding_dimension
+            SELECT partition, proxy_priority, source_label, majority_agreement,
+                   embedding, embedding_dimension
             FROM embeddings
             WHERE status = 'complete'
             ORDER BY image_name
@@ -99,20 +107,26 @@ def load_embeddings(
     partitions: list[str] = []
     labels: list[str] = []
     audit_labels: list[str] = []
+    majority_agreements: list[int] = []
     embeddings: list[np.ndarray] = []
-    for index, (partition, label, audit_label, blob, dimension) in enumerate(rows):
+    for index, (partition, label, audit_label, majority_agreement, blob, dimension) in enumerate(rows):
         if partition not in ALLOWED_PARTITIONS:
             raise ValueError(f"Row {index} has invalid partition {partition!r}.")
         if label not in ALLOWED_LABELS:
             raise ValueError(f"Row {index} has invalid proxy priority {label!r}.")
         if dimension != EMBEDDING_DIMENSION:
             raise ValueError(f"Row {index} has embedding dimension {dimension!r}.")
+        if majority_agreement not in (4, 5, 6, 7):
+            raise ValueError(
+                f"Row {index} has invalid majority agreement {majority_agreement!r}."
+            )
         vector = np.frombuffer(blob, dtype="<f4")
         if vector.shape != (EMBEDDING_DIMENSION,) or not np.isfinite(vector).all():
             raise ValueError(f"Row {index} has a malformed or non-finite embedding.")
         partitions.append(partition)
         labels.append(label)
         audit_labels.append(audit_label)
+        majority_agreements.append(majority_agreement)
         embeddings.append(vector)
 
     matrix = np.stack(embeddings).astype(np.float32, copy=False)
@@ -121,6 +135,7 @@ def load_embeddings(
         np.asarray(labels),
         np.asarray(partitions),
         np.asarray(audit_labels),
+        np.asarray(majority_agreements),
         metadata,
     )
 
@@ -196,6 +211,7 @@ def metrics_for(
         "review_first_capture_by_queue_fraction": review_first_capture_by_queue_fraction(
             truth, review_first_probability
         ),
+        "threshold_sweep": threshold_sweep(truth, review_first_probability),
     }
 
 
@@ -235,6 +251,71 @@ def review_first_capture_by_queue_fraction(
     return captures
 
 
+def threshold_sweep(
+    truth: np.ndarray,
+    review_first_probability: np.ndarray,
+) -> list[dict[str, int | float]]:
+    """Precompute held-out proxy queue outcomes for the dashboard slider.
+
+    These are descriptive threshold snapshots, not calibrated risk estimates or
+    a recommendation to change the deployed experimental-head threshold.
+    """
+
+    truth = np.asarray(truth)
+    scores = np.asarray(review_first_probability, dtype=np.float64)
+    if truth.ndim != 1 or scores.shape != truth.shape or truth.size == 0:
+        raise ValueError("Truth and score arrays must be non-empty one-dimensional peers.")
+    if not np.isfinite(scores).all():
+        raise ValueError("Review First scores must be finite.")
+    positive = truth == REVIEW_FIRST
+    total_positive = int(positive.sum())
+    rows: list[dict[str, int | float]] = []
+    for threshold in THRESHOLD_SWEEP_VALUES:
+        selected = scores >= threshold
+        selected_count = int(selected.sum())
+        captured = int(positive[selected].sum())
+        rows.append(
+            {
+                "threshold": float(threshold),
+                "queue_size": selected_count,
+                "queue_fraction": float(selected_count / truth.size),
+                "captured_review_first_count": captured,
+                "total_review_first_count": total_positive,
+                "capture_fraction": float(captured / total_positive)
+                if total_positive
+                else 0.0,
+                "precision": float(captured / selected_count) if selected_count else 0.0,
+                "recall": float(captured / total_positive) if total_positive else 0.0,
+            }
+        )
+    return rows
+
+
+def agreement_distribution(
+    majority_agreement: np.ndarray,
+) -> list[dict[str, int | float | str]]:
+    """Summarize the seven-annotator majority agreement behind the proxy."""
+
+    agreements = np.asarray(majority_agreement, dtype=np.int64)
+    if agreements.ndim != 1 or agreements.size == 0:
+        raise ValueError("Majority-agreement values must be a non-empty vector.")
+    if not np.isin(agreements, (4, 5, 6, 7)).all():
+        raise ValueError("Majority-agreement values must be between four and seven.")
+    rows: list[dict[str, int | float | str]] = []
+    for agreement in (4, 5, 6, 7):
+        count = int((agreements == agreement).sum())
+        rows.append(
+            {
+                "majority_agreement": agreement,
+                "label": f"{agreement} of 7 annotators",
+                "sample_count": count,
+                "fraction": float(count / agreements.size),
+                "proxy_priority": REVIEW_FIRST if agreement <= 5 else LOWER_PRIORITY,
+            }
+        )
+    return rows
+
+
 def main() -> int:
     args = parse_args()
     if args.threads < 1 or args.max_iterations < 1:
@@ -245,7 +326,7 @@ def main() -> int:
 
     database = args.database.resolve()
     output_dir = args.output_dir.resolve()
-    matrix, labels, partitions, audit_labels, embedding_metadata = load_embeddings(
+    matrix, labels, partitions, audit_labels, majority_agreements, embedding_metadata = load_embeddings(
         database
     )
     train_mask = partitions == "train"
@@ -325,6 +406,7 @@ def main() -> int:
     report = {
         "classification_threshold": CLASSIFICATION_THRESHOLD,
         "overall_test_metrics": overall_metrics,
+        "annotator_agreement_distribution": agreement_distribution(majority_agreements),
         "audit_metrics_by_mhist_majority_vote_label": subgroup_metrics,
         "warning": (
             "Performance measures agreement-proxy prediction on MHIST, not clinical "

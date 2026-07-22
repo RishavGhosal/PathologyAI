@@ -3,8 +3,8 @@
 PathologyAI is a student-friendly **Research/Education Prototype** for organizing
 pathology images for human review. It validates uploaded images, checks basic
 presentation quality, builds a review queue, and records reviewer feedback.
-When explicitly enabled, it can also use a local UNI encoder for an exploratory
-feature-variation visualization and a separate experimental MHIST
+When explicitly enabled, it can also use a local UNI or Hibou-B encoder for an
+exploratory feature-variation visualization and a separate experimental MHIST
 annotator-agreement proxy head for review ordering.
 
 > **This research and education prototype provides review-priority suggestions only. It does not provide a medical diagnosis and does not replace review by a qualified pathologist.**
@@ -60,10 +60,10 @@ UNI is optional. Install the CPU inference packages with:
 
 Place the gated checkpoint at `models/uni/pytorch_model.bin`. The checkpoint is
 ignored by Git and must not be redistributed. When the checkpoint and optional
-packages are ready, the sidebar toggle **Use local UNI feature visualization**
-is enabled by default. The first analysis loads the approximately 1.2 GB ViT-L
-checkpoint and may be slow or use substantial memory on CPU. The toggle can be
-disabled for the faster deterministic fallback. Systems with a supported NVIDIA
+packages are ready, select **Local UNI feature exploration** in the sidebar.
+The first analysis loads the approximately 1.2 GB ViT-L checkpoint and may be
+slow or use substantial memory on CPU. Select the deterministic option for the
+faster fallback. Systems with a supported NVIDIA
 GPU should install a matching PyTorch build using the official PyTorch selector
 instead of the CPU pins in `requirements-uni.txt`.
 
@@ -72,6 +72,22 @@ If the local quick prototype head also exists under
 second sidebar toggle enables its MHIST annotator-agreement proxy. The head
 requires UNI and automatically falls back to the deterministic rule if it is
 missing, disabled, incompatible, or fails on an image.
+
+### Optional local Hibou-B mode
+
+Hibou-B is an Apache-2.0 pathology feature encoder used here only for local,
+exploratory feature-variation maps. Accept its Hugging Face access terms, then
+place the complete `histai/hibou-b` snapshot in `models/hibou-b/` and install:
+
+```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements-hibou.txt
+```
+
+The snapshot and any Hugging Face token remain ignored by Git. Choose **Local
+Hibou-B feature exploration (CPU)** in Model Settings after it is detected.
+It is not a tissue classifier, diagnosis model, or review-priority model, and
+it does not use the UNI-only MHIST proxy head. The app deliberately does not
+download model weights or remote code during normal use.
 
 ## Publish safely to GitHub
 
@@ -124,7 +140,7 @@ Possible cropping or edge contact is an advisory only because tissue commonly
 touches the edge of a microscopy field; it does not reject an otherwise usable
 image.
 
-## Model Attention and UNI limitations
+## Model attention and local encoder limitations
 
 The always-available attention view is a repeatable, deterministic visualization
 based on edges, local contrast, and color variation. The optional local UNI mode
@@ -132,7 +148,9 @@ loads the approved pretrained pathology encoder and compares its patch-token
 representations within a letterboxed 224 × 224 copy of the image. The resulting
 overlay shows relative feature variation in that resized view.
 
-UNI is a feature encoder, not a diagnosis model or review-priority classifier.
+UNI and Hibou-B are feature encoders, not diagnosis models or review-priority
+classifiers. Hibou-B is CPU-only in this prototype and does not feed the MHIST
+agreement-proxy head; that head remains UNI-specific.
 When the optional local prototype head is enabled, UNI supplies a 1,024-value
 embedding and the separate head suggests `Review First` or `Lower Priority`.
 Otherwise those labels use the deterministic visual-complexity fallback.
@@ -163,9 +181,9 @@ and advisory quality codes, reviewed/awaiting state, de-identified group ID,
 and override status. These are the record-level inputs used by the aggregate
 dashboard counts.
 
-A valid de-identified case/slide group ID is required before an image can be
-marked reviewed. Reviewer notes are required only when the suggested priority is
-overridden. The bulk group action fills only blank records from the same
+A de-identified case/slide group ID is optional for review and export, but is
+required by the later grouped-training preparation workflow. Reviewer notes are
+required only when the suggested priority is overridden. The bulk group action fills only blank records from the same
 top-level uploaded source; it never infers case membership from filenames,
 folders, or ZIP structure and never overwrites an existing group ID.
 
@@ -179,7 +197,7 @@ Starting a new session or clearing Streamlit state removes them.
 ## Operational and model dashboards
 
 `Operational Dashboard` reports queue progress, effective priority counts,
-stable image-quality issue counts, skipped inputs, attempt-aware UNI embedding
+stable image-quality issue counts, skipped inputs, attempt-aware model-embedding
 success/failure/not-attempted counts, experimental/deterministic/fallback
 counts, proxy-score distribution, and reviewer agreement. Experimental-head
 agreement and its per-priority breakdown include only completed reviews that
@@ -187,7 +205,7 @@ were actually scored by that head. Tissue context counts cover valid images in
 the current batch; the declaration is batch-level and reviewer-supplied, and the
 app does not use an automatic out-of-domain detector.
 
-When at least eight compatible UNI embeddings are present, the operational tab
+When at least eight compatible embeddings from the same selected feature encoder are present, the operational tab
 adds one cached PCA-initialized t-SNE layout with three views colored by
 reviewer-confirmed priority, current batch domain declaration, and structured
 model/fallback source. Awaiting images are never presented as reviewer-confirmed.
@@ -216,13 +234,20 @@ unavailable message instead of an invented curve.
 
 ## Reviewed-label research export
 
-Each reviewed image has a required de-identified slide/case grouping code,
+Each reviewed image has an optional de-identified slide/case grouping code,
 reviewer notes when needed, a confirmed/overridden priority, and completion
 metadata. The export panel downloads a CSV for future review-priority model
 development. It includes only reviewed images from the current batch, structured
 priority and fallback provenance, stable quality codes and readable reasons,
 domain declaration, proxy score, and 1,024 UNI feature columns when UNI
-succeeded. It excludes raw images, filenames, upload paths, and unreviewed rows.
+succeeded. Other feature encoders export their model metadata and dimension for
+audit; their vectors are not placed into the fixed UNI training columns. It
+excludes raw images, filenames, upload paths, and unreviewed rows.
+
+For batches scored by the experimental head, the dashboard also bins
+agreement-proxy scores by reviewer-confirmed, overridden, and awaiting-review
+outcomes. This is a descriptive current-batch view, not a calibration plot or
+clinical-confidence display.
 
 The app checks group-ID length and format but cannot determine whether a value is
 actually de-identified. Before download, the reviewer must confirm that notes and
@@ -317,6 +342,12 @@ The supplied MHIST annotations do not include patient/case/slide group IDs, so
 patient-level leakage cannot be independently verified. Reported metrics measure
 prediction of this dataset-specific agreement proxy only; they are not clinical
 accuracy, diagnosis accuracy, or evidence of real-world review urgency.
+
+The model-evaluation tab includes the seven-pathologist agreement distribution,
+a compact dataset/model card, and a threshold explorer based on precomputed
+held-out MHIST proxy outcomes. The explorer changes only the displayed
+evaluation summary; it never changes the active model threshold or represents a
+calibrated probability.
 
 ## Replacing the quick prototype head
 

@@ -22,7 +22,6 @@ UNKNOWN_OR_OTHER_DOMAIN = "Unknown or other tissue"
 MHIST_LIKE_DOMAIN = "MHIST-like colorectal-polyp patches"
 DOMAIN_DECLARATIONS = (UNKNOWN_OR_OTHER_DOMAIN, MHIST_LIKE_DOMAIN)
 DEFAULT_SCREENING_SECONDS_PER_IMAGE = 30.0
-UNI_EMBEDDING_DIMENSION = 1024
 
 
 @dataclass(frozen=True)
@@ -123,7 +122,7 @@ def _codes_from(quality: Any, names: tuple[str, ...]) -> tuple[str, ...]:
     return ()
 
 
-def _valid_uni_embedding(record: Any) -> bool:
+def _valid_model_embedding(record: Any) -> bool:
     attention = getattr(record, "attention", None)
     embedding = getattr(attention, "embedding", None)
     if embedding is None:
@@ -134,7 +133,7 @@ def _valid_uni_embedding(record: Any) -> bool:
         values = tuple(float(value) for value in embedding)
     except (TypeError, ValueError, OverflowError):
         return False
-    return len(values) == UNI_EMBEDDING_DIMENSION and all(
+    return len(values) >= 2 and all(
         math.isfinite(value) for value in values
     )
 
@@ -284,7 +283,7 @@ def build_operational_metrics(
         )
         advisory_counts.update(_codes_from(quality, ("advisory_codes",)))
 
-        if _valid_uni_embedding(record):
+        if _valid_model_embedding(record):
             embedding_success_count += 1
         kind = _method_kind(record)
         method_counts[kind] += 1

@@ -73,10 +73,23 @@ def validate_group_id(value: object) -> str:
     return group_id
 
 
+def validate_optional_group_id(value: object) -> str:
+    """Validate a grouping value when supplied, without blocking review export.
+
+    A group ID is needed by the later grouped-training preparation workflow, but
+    an ordinary reviewed-label export is still useful without one.  Keeping the
+    blank value explicit lets that downstream workflow refuse ungrouped rows
+    rather than making the user re-review an entire browser session.
+    """
+
+    group_id = str(value or "").strip()
+    return validate_group_id(group_id) if group_id else ""
+
+
 def validate_review_fields(record: Any, review: Mapping[str, object]) -> None:
     """Enforce fields required for reviewed training feedback."""
 
-    validate_group_id(review.get("group_id", ""))
+    validate_optional_group_id(review.get("group_id", ""))
     reviewer_priority = str(review.get("priority", ""))
     if reviewer_priority not in PRIORITIES:
         raise ValueError("Reviewer priority is not one of the three allowed labels.")
@@ -101,14 +114,23 @@ def _validated_embedding(
     )
     if embedding is None:
         return None
-    if len(embedding) != UNI_EMBEDDING_DIMENSION:
+    embedding_model = str(
+        review.get("embedding_model_at_review")
+        if "embedding_model_at_review" in review
+        else getattr(record.attention, "embedding_model", "") or ""
+    )
+    if embedding_model == "MahmoodLab/UNI" and len(embedding) != UNI_EMBEDDING_DIMENSION:
         raise ValueError(
             f"UNI embedding for {record.image_id[:12]} has an unexpected dimension."
         )
     values = tuple(float(value) for value in embedding)
+    if len(values) < 2:
+        raise ValueError(
+            f"Model embedding for {record.image_id[:12]} has an unexpected dimension."
+        )
     if not all(math.isfinite(value) for value in values):
         raise ValueError(
-            f"UNI embedding for {record.image_id[:12]} contains non-finite values."
+            f"Model embedding for {record.image_id[:12]} contains non-finite values."
         )
     return values
 
@@ -131,7 +153,7 @@ def build_review_export_csv(
             continue
         validate_review_fields(record, review)
         reviewer_priority = str(review.get("priority", ""))
-        group_id = validate_group_id(review.get("group_id", ""))
+        group_id = validate_optional_group_id(review.get("group_id", ""))
         suggested_priority = str(
             review.get("suggested_priority_at_review")
             or record.triage.suggested_priority
@@ -151,7 +173,7 @@ def build_review_export_csv(
         row: dict[str, object] = {
             "image_id": record.image_id,
             "group_id": _safe_text(group_id),
-            "group_id_format_validated": "True",
+            "group_id_format_validated": str(bool(group_id)),
             "suggested_priority": suggested_priority,
             "reviewer_priority": reviewer_priority,
             "reviewed": "True",
@@ -196,6 +218,10 @@ def build_review_export_csv(
             "human_review_required": "True",
         }
         for index, column in enumerate(EMBEDDING_COLUMNS):
-            row[column] = "" if embedding is None else format(embedding[index], ".9g")
+            row[column] = (
+                ""
+                if embedding is None or len(embedding) != UNI_EMBEDDING_DIMENSION
+                else format(embedding[index], ".9g")
+            )
         writer.writerow(row)
     return stream.getvalue().encode("utf-8")
