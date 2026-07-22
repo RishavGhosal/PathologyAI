@@ -1,2292 +1,377 @@
-"""PathologyAI research/education review-priority Streamlit app."""
+"""Local PathologyAI API server with a Vite-built React frontend."""
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from hashlib import sha256
+from email.parser import BytesParser
+from email.policy import default
+from http import HTTPStatus
+from http.cookies import SimpleCookie
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 import json
-import math
+import mimetypes
+import os
+from pathlib import Path
+from threading import RLock, Timer
+from typing import Any
+from urllib.parse import unquote, urlparse
+from uuid import uuid4
+import webbrowser
 
-import numpy as np
-from PIL import Image
-import streamlit as st
-
-try:
-    import plotly.graph_objects as go
-except ImportError:  # The basic app remains usable without the optional viewer.
-    go = None
-
-from pathology_ai.pipeline import (
-    BatchResult,
-    UploadPayload,
-    format_file_size,
-    process_uploads,
-)
 from pathology_ai.attention import get_attention_provider
 from pathology_ai.dashboard_metrics import (
+    DEFAULT_SCREENING_SECONDS_PER_IMAGE,
     MHIST_LIKE_DOMAIN,
     UNKNOWN_OR_OTHER_DOMAIN,
     build_operational_metrics,
 )
-from pathology_ai.dashboard_visuals import (
-    ProjectionUnavailable,
-    build_tsne_projection,
-)
-from pathology_ai.review_export import (
-    build_review_export_csv,
-    validate_group_id,
-    validate_review_fields,
-)
+from pathology_ai.hibou_provider import get_hibou_provider_status
+from pathology_ai.pipeline import BatchResult, UploadPayload, format_file_size, process_uploads
+from pathology_ai.review_export import build_review_export_csv, validate_optional_group_id, validate_review_fields
 from pathology_ai.review_model import get_review_model, get_review_model_status
-from pathology_ai.hibou_provider import (
-    LocalHibouFeatureProvider,
-    get_hibou_provider_status,
-)
-from pathology_ai.triage import (
-    LOWER_PRIORITY,
-    NEEDS_BETTER_IMAGE,
-    PRIORITIES,
-    REVIEW_FIRST,
-    priority_sort_key,
-)
+from pathology_ai.triage import PRIORITIES, priority_sort_key
 from pathology_ai.uni_provider import get_uni_provider_status
 
 
+HOST, PORT = "127.0.0.1", int(os.getenv("PATHOLOGYAI_PORT", "8501"))
+PROJECT_DIR = Path(__file__).resolve().parent
+DIST_DIR = PROJECT_DIR / "dist"
+INDEX_PATH = DIST_DIR / "index.html"
 DISCLAIMER = (
     "This research and education prototype provides review-priority suggestions only. "
     "It does not provide a medical diagnosis and does not replace review by a qualified "
     "pathologist."
 )
-MAX_BROWSER_PREVIEW_SIDE = 1600
-NATIVE_PREVIEW_PIXEL_LIMIT = 4_000_000
-EMBEDDING_PROJECTION_CACHE_VERSION = "l2-tsne-v1"
-PRIORITY_WIDGET_STATE_VERSION = 2
-DOMAIN_LABEL_TO_VALUE = {
-    UNKNOWN_OR_OTHER_DOMAIN: "unknown_or_other",
-    MHIST_LIKE_DOMAIN: "mhist_like_colorectal_polyp",
-}
-THEME_DARK_BACKGROUND = "#0E1117"
-UI_PALETTE = {
-    "accent": "#00C0F2",
-    "priority_high": "#FF4B4B",
-    "priority_medium": "#FACA2B",
-    "priority_low": "#619C74",
+DOMAIN_VALUES = {UNKNOWN_OR_OTHER_DOMAIN: "unknown_or_other", MHIST_LIKE_DOMAIN: "mhist_like_colorectal_polyp"}
+MAX_REQUEST_BYTES = 110 * 1024 * 1024
+STATIC_MIME_TYPES = {
+    ".css": "text/css; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".map": "application/json; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".wasm": "application/wasm",
+    ".webmanifest": "application/manifest+json",
 }
 
 
-def _priority_widget_key(record_id: str) -> str:
-    return f"priority_v{PRIORITY_WIDGET_STATE_VERSION}_{record_id}"
+@dataclass
+class Workspace:
+    batch: BatchResult | None = None
+    reviews: dict[str, dict[str, Any]] = field(default_factory=dict)
+    domain_context: str = "unknown_or_other"
+    screening_seconds: float = DEFAULT_SCREENING_SECONDS_PER_IMAGE
+    provider_kind: str = "deterministic"
+    use_review_model: bool = False
 
 
-st.set_page_config(
-    page_title="PathologyAI | Research/Education Prototype",
-    page_icon="🔬",
-    layout="wide",
-)
+SESSIONS: dict[str, Workspace] = {}
+LOCK = RLock()
 
 
-def _render_app_styles() -> None:
-    """Render the app's single, theme-derived UI stylesheet."""
+def _static_file(url_path: str) -> Path | None:
+    """Resolve a URL path to a regular file contained by the Vite output."""
 
-    st.markdown(
-        f"""
-        <style>
-        :root {{
-            --accent: {UI_PALETTE["accent"]};
-            --priority-high: {UI_PALETTE["priority_high"]};
-            --priority-medium: {UI_PALETTE["priority_medium"]};
-            --priority-low: {UI_PALETTE["priority_low"]};
-            --on-filled-control: {THEME_DARK_BACKGROUND};
-        }}
+    try:
+        decoded = unquote(url_path, errors="strict")
+    except UnicodeDecodeError:
+        return None
+    if decoded in {"", "/", "/index.html"}:
+        candidate = INDEX_PATH
+    else:
+        if not decoded.startswith("/") or "\x00" in decoded:
+            return None
+        parts = decoded[1:].replace("\\", "/").split("/")
+        if any(part in {"", ".", ".."} for part in parts):
+            return None
+        candidate = DIST_DIR.joinpath(*parts)
 
-        .pathology-workflow {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-            align-items: center;
-            margin: 0.15rem 0 1.1rem;
-        }}
-        .pathology-workflow-step {{
-            border: 1px solid rgba(250, 250, 250, 0.28);
-            border-radius: 999px;
-            color: rgba(250, 250, 250, 0.7);
-            font-size: 0.88rem;
-            padding: 0.34rem 0.72rem;
-        }}
-        .pathology-workflow-step--current {{
-            background: var(--accent);
-            border-color: var(--accent);
-            color: var(--on-filled-control);
-            font-weight: 700;
-        }}
-        .pathology-workflow-step--complete {{
-            border-color: var(--accent);
-            color: #FAFAFA;
-            font-weight: 600;
-        }}
-        .pathology-workflow-arrow {{
-            color: rgba(250, 250, 250, 0.48);
-        }}
-        .pathology-priority-pill {{
-            border-radius: 999px;
-            color: var(--on-filled-control);
-            display: inline-block;
-            font-size: 0.8rem;
-            font-weight: 700;
-            line-height: 1.2;
-            padding: 0.28rem 0.6rem;
-        }}
-        .pathology-priority-pill--high {{ background: var(--priority-high); }}
-        .pathology-priority-pill--medium {{ background: var(--priority-medium); }}
-        .pathology-priority-pill--low {{ background: var(--priority-low); }}
-        [data-testid="stMultiSelect"] [role="button"][aria-label^="Review First,"] {{
-            background: var(--priority-high) !important;
-            color: var(--on-filled-control) !important;
-        }}
-        [data-testid="stMultiSelect"] [role="button"][aria-label^="Needs Better Image,"] {{
-            background: var(--priority-medium) !important;
-            color: var(--on-filled-control) !important;
-        }}
-        [data-testid="stMultiSelect"] [role="button"][aria-label^="Lower Priority,"] {{
-            background: var(--priority-low) !important;
-            color: var(--on-filled-control) !important;
-        }}
-        [data-testid="stMultiSelect"] [role="button"][aria-label^="Review First,"] *,
-        [data-testid="stMultiSelect"] [role="button"][aria-label^="Needs Better Image,"] *,
-        [data-testid="stMultiSelect"] [role="button"][aria-label^="Lower Priority,"] * {{
-            color: var(--on-filled-control) !important;
-            fill: currentColor !important;
-        }}
-        .pathology-priority-summary {{
-            align-items: center;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.45rem;
-            margin: 0.35rem 0;
-        }}
-        [data-testid="stTabs"] [data-testid="stTab"] {{
-            border: 1px solid transparent;
-            border-radius: 0.45rem 0.45rem 0 0;
-            margin-right: 0.25rem;
-            padding: 0 0.8rem;
-        }}
-        [data-testid="stTabs"] [data-testid="stTab"][data-selected] {{
-            background: var(--accent);
-            border-color: var(--accent);
-            color: var(--on-filled-control);
-            font-weight: 700;
-        }}
-        [data-testid="stButton"] [data-testid="stBaseButton-primary"] {{
-            background: var(--accent);
-            border-color: var(--accent);
-            color: var(--on-filled-control);
-            font-weight: 700;
-        }}
-        [data-testid="stButton"] [data-testid="stBaseButton-primary"] * {{
-            color: var(--on-filled-control);
-        }}
-        [data-testid="stButton"] [data-testid="stBaseButton-secondary"] {{
-            background: transparent;
-            border: 1px solid rgba(250, 250, 250, 0.62);
-            color: #FAFAFA;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(DIST_DIR.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return resolved if resolved.is_file() else None
 
 
-def _render_workflow_tracker(target, current_step: int) -> None:
-    steps = ("Upload", "Set Priorities", "Review Images", "Confirm Decision")
-    parts = []
-    for index, label in enumerate(steps, start=1):
-        state_class = (
-            " pathology-workflow-step--current"
-            if index == current_step
-            else " pathology-workflow-step--complete"
-            if index < current_step
-            else ""
-        )
-        parts.append(
-            f'<span class="pathology-workflow-step{state_class}">{index}. {label}</span>'
-        )
-        if index < len(steps):
-            parts.append('<span class="pathology-workflow-arrow">→</span>')
-    target.markdown(
-        '<div class="pathology-workflow" aria-label="Review workflow">'
-        + "".join(parts)
-        + "</div>",
-        unsafe_allow_html=True,
-    )
+def _static_content_type(path: Path) -> str:
+    """Return deterministic browser-safe MIME types for Vite output files."""
+
+    suffix = path.suffix.lower()
+    if suffix in STATIC_MIME_TYPES:
+        return STATIC_MIME_TYPES[suffix]
+    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
 
-def _priority_pill(priority: str) -> str:
-    class_by_priority = {
-        REVIEW_FIRST: "high",
-        NEEDS_BETTER_IMAGE: "medium",
-        LOWER_PRIORITY: "low",
+def _review_defaults(record: Any) -> dict[str, Any]:
+    return {
+        "priority": record.triage.suggested_priority,
+        "notes": "",
+        "group_id": "",
+        "reviewed": False,
+        "reviewed_at_utc": "",
     }
-    return (
-        '<span class="pathology-priority-pill pathology-priority-pill--'
-        f'{class_by_priority[priority]}">{priority}</span>'
-    )
 
 
-@st.cache_data(show_spinner=False, max_entries=8)
-def _process_cached(
-    payload_values: tuple[tuple[str, bytes, str], ...],
-    provider_cache_key: str,
-    provider_kind: str,
-    review_model_cache_key: str,
-    use_review_model: bool,
-) -> BatchResult:
-    # Keys are included so local artifact changes invalidate processed results.
-    del provider_cache_key, review_model_cache_key
-    payloads = [
-        UploadPayload(name=name, data=data, mime_type=mime_type)
-        for name, data, mime_type in payload_values
-    ]
-    # Keep the ordinary UNI/demonstration call compatible with an already-loaded
-    # attention module from an older Streamlit process. Hibou is selected directly
-    # because older versions of get_attention_provider accepted only prefer_uni.
-    if provider_kind == "hibou":
-        hibou_status = get_hibou_provider_status()
-        provider = (
-            LocalHibouFeatureProvider(hibou_status.model_dir)
-            if hibou_status.ready
-            else get_attention_provider(prefer_uni=False)
-        )
-    else:
-        provider = get_attention_provider(prefer_uni=provider_kind == "uni")
-    review_model = get_review_model() if use_review_model else None
-    return process_uploads(payloads, provider=provider, review_model=review_model)
-
-
-@st.cache_data(show_spinner=False, max_entries=4)
-def _project_embeddings_cached(
-    embeddings: tuple[tuple[float, ...], ...],
-    cache_version: str,
-):
-    del cache_version
-    return build_tsne_projection(embeddings)
-
-
-def _batch_fingerprint(payload_values: tuple[tuple[str, bytes, str], ...]) -> str:
-    digest = sha256()
-    for name, data, mime_type in payload_values:
-        digest.update(name.encode("utf-8", errors="replace"))
-        digest.update(b"\0")
-        digest.update(mime_type.encode("utf-8", errors="replace"))
-        digest.update(b"\0")
-        digest.update(data)
-    return digest.hexdigest()
-
-
-def _browser_preview(image: Image.Image) -> tuple[Image.Image, bool]:
-    preview = image.convert("RGB").copy()
-    downsampled = max(preview.size) > MAX_BROWSER_PREVIEW_SIDE
-    if downsampled:
-        preview.thumbnail(
-            (MAX_BROWSER_PREVIEW_SIDE, MAX_BROWSER_PREVIEW_SIDE),
-            Image.Resampling.LANCZOS,
-        )
-    return preview, downsampled
-
-
-def _render_fallback_viewer(image: Image.Image, key: str, caption: str) -> None:
-    reset_key = f"{key}_reset"
-    zoom_key = f"{key}_zoom"
-    if st.button("Reset view", key=reset_key):
-        st.session_state[zoom_key] = 100
-    zoom_percent = st.slider(
-        "Preview zoom",
-        min_value=25,
-        max_value=200,
-        value=100,
-        step=25,
-        key=zoom_key,
-    )
-    preview, downsampled = _browser_preview(image)
-    display_width = max(160, int(preview.width * (zoom_percent / 100.0)))
-    st.image(preview, width=display_width, caption=caption)
-    message = (
-        "Interactive viewer unavailable because Plotly is not installed. "
-        "Use the zoom slider; browser scrolling provides basic navigation."
-    )
-    if downsampled:
-        message += " This browser preview is downsampled for stability."
-    st.info(message)
-
-
-def render_image_viewer(image: Image.Image, key: str, caption: str) -> None:
-    """Render an offline zoom/pan viewer, or a reliable native fallback."""
-
-    if go is None:
-        _render_fallback_viewer(image, key, caption)
-        return
-
-    try:
-        preview, downsampled = _browser_preview(image)
-        array = np.asarray(preview, dtype=np.uint8)
-        height = max(360, min(620, int(760 * preview.height / max(preview.width, 1))))
-        figure = go.Figure(go.Image(z=array))
-        figure.update_layout(
-            dragmode="pan",
-            height=height,
-            margin=dict(l=0, r=0, t=8, b=0),
-            uirevision=key,
-        )
-        figure.update_xaxes(showgrid=False, showticklabels=False, zeroline=False)
-        figure.update_yaxes(
-            showgrid=False,
-            showticklabels=False,
-            zeroline=False,
-            scaleanchor="x",
-            scaleratio=1,
-        )
-        st.plotly_chart(
-            figure,
-            width="stretch",
-            height=height,
-            key=f"plot_{key}",
-            config={
-                "displayModeBar": True,
-                "displaylogo": False,
-                "scrollZoom": True,
-                "modeBarButtonsToRemove": ["select2d", "lasso2d"],
-            },
-        )
-        preview_note = (
-            " Browser preview is downsampled for stability." if downsampled else ""
-        )
-        st.caption(
-            f"{caption} Use the mouse wheel or toolbar to zoom, drag to pan, "
-            f"Autoscale to fit, and Reset axes to reset.{preview_note}"
-        )
-    except Exception:
-        st.warning(
-            "The interactive viewer could not load, so the basic image-viewer fallback "
-            "is shown instead."
-        )
-        _render_fallback_viewer(image, key, caption)
-
-
-def _initialize_review_state(batch: BatchResult) -> dict[str, dict[str, object]]:
-    reviews = dict(st.session_state.get("reviews", {}))
-    for record in batch.records:
-        state = dict(
-            reviews.get(
-                record.image_id,
-                {
-                    "notes": "",
-                    "group_id": "",
-                    "priority": record.triage.suggested_priority,
-                    "reviewed": False,
-                    "priority_overridden": False,
-                },
-            )
-        )
-        priority_key = _priority_widget_key(record.image_id)
-        notes_key = f"notes_{record.image_id}"
-        group_key = f"group_{record.image_id}"
-        reviewed_key = f"reviewed_{record.image_id}"
-
-        if priority_key in st.session_state and st.session_state[priority_key] in PRIORITIES:
-            state["priority"] = st.session_state[priority_key]
-        if notes_key in st.session_state:
-            state["notes"] = st.session_state[notes_key]
-        if group_key in st.session_state:
-            state["group_id"] = st.session_state[group_key]
-        if reviewed_key in st.session_state:
-            state["reviewed"] = bool(st.session_state[reviewed_key])
-
-        suggestion_key = (
-            f"{record.triage.priority_source}|{record.triage.suggested_priority}"
-        )
-        previous_suggestion_key = state.get("suggestion_key")
-        previous_suggested_priority = state.get("last_suggested_priority")
-        if "priority_overridden" not in state:
-            state["priority_overridden"] = bool(
-                previous_suggested_priority
-                and state.get("priority") != previous_suggested_priority
-            )
-        suggestion_changed = (
-            previous_suggestion_key is not None
-            and previous_suggestion_key != suggestion_key
-        )
-        if (
-            suggestion_changed
-            and not bool(state.get("priority_overridden", False))
-            and not bool(state.get("reviewed", False))
-        ):
-            state["priority"] = record.triage.suggested_priority
-            st.session_state[priority_key] = record.triage.suggested_priority
-        state["suggestion_key"] = suggestion_key
-        state["last_suggested_priority"] = record.triage.suggested_priority
-
-        if state.get("priority") not in PRIORITIES:
-            state["priority"] = record.triage.suggested_priority
-        state.setdefault("notes", "")
-        state.setdefault("group_id", "")
-        state.setdefault("group_id_format_validated", False)
-        state.setdefault("reviewed", False)
-        state.setdefault("reviewed_at_utc", "")
-
-        if priority_key not in st.session_state:
-            st.session_state[priority_key] = state["priority"]
-        if notes_key not in st.session_state:
-            st.session_state[notes_key] = state["notes"]
-        if group_key not in st.session_state:
-            st.session_state[group_key] = state["group_id"]
-        if reviewed_key not in st.session_state:
-            st.session_state[reviewed_key] = state["reviewed"]
-        reviews[record.image_id] = state
-
-    st.session_state["reviews"] = reviews
-    return reviews
-
-
-def _mark_priority_override(record_id: str) -> None:
-    reviews = dict(st.session_state.get("reviews", {}))
-    if record_id not in reviews:
-        return
-    state = dict(reviews[record_id])
-    selected = st.session_state.get(_priority_widget_key(record_id))
-    state["priority_overridden"] = selected != state.get("last_suggested_priority")
-    state["priority"] = selected
-    reviews[record_id] = state
-    st.session_state["reviews"] = reviews
-
-
-def _sync_selected_review(record_id: str) -> None:
-    reviews = dict(st.session_state.get("reviews", {}))
-    if record_id not in reviews:
-        return
-    state = dict(reviews[record_id])
-    state["priority"] = st.session_state.get(
-        _priority_widget_key(record_id), state.get("priority", LOWER_PRIORITY)
-    )
-    state["notes"] = st.session_state.get(f"notes_{record_id}", state.get("notes", ""))
-    state["group_id"] = st.session_state.get(
-        f"group_{record_id}", state.get("group_id", "")
-    )
-    state["reviewed"] = bool(
-        st.session_state.get(f"reviewed_{record_id}", state.get("reviewed", False))
-    )
-    reviews[record_id] = state
-    st.session_state["reviews"] = reviews
-
-
-def _review_state_from_widgets(record, reviews: dict[str, dict[str, object]]) -> dict[str, object]:
-    state = dict(reviews[record.image_id])
-    state["priority"] = st.session_state.get(
-        _priority_widget_key(record.image_id),
-        state.get("priority", record.triage.suggested_priority),
-    )
-    state["notes"] = st.session_state.get(
-        f"notes_{record.image_id}", state.get("notes", "")
-    )
-    state["group_id"] = st.session_state.get(
-        f"group_{record.image_id}", state.get("group_id", "")
-    )
-    state["priority_overridden"] = (
-        state["priority"] != record.triage.suggested_priority
-    )
-    return state
-
-
-def _save_review(record, next_image_id: str | None = None) -> None:
-    reviews = dict(st.session_state.get("reviews", {}))
-    if record.image_id not in reviews:
-        return
-    state = _review_state_from_widgets(record, reviews)
-    try:
-        validate_review_fields(record, state)
-    except ValueError as exc:
-        st.session_state[f"review_error_{record.image_id}"] = str(exc)
-        return
-    state["reviewed"] = True
-    state["reviewed_at_utc"] = datetime.now(timezone.utc).isoformat()
-    state["group_id_format_validated"] = bool(str(state.get("group_id", "")).strip())
-    state["review_validation_version"] = 1
-    state["suggested_priority_at_review"] = record.triage.suggested_priority
-    state["priority_source_at_review"] = record.triage.priority_source
-    state["priority_method_at_review"] = record.triage.priority_method
-    state["priority_fallback_reason_at_review"] = record.triage.fallback_reason or ""
-    state["review_first_proxy_score_at_review"] = record.triage.review_first_score
-    state["attention_provider_at_review"] = record.attention.provider_name
-    state["embedding_model_at_review"] = record.attention.embedding_model or ""
-    state["embedding_at_review"] = (
-        None
-        if record.attention.embedding is None
-        else tuple(float(value) for value in record.attention.embedding)
-    )
-    reviews[record.image_id] = state
-    st.session_state["reviews"] = reviews
-    st.session_state[f"reviewed_{record.image_id}"] = True
-    st.session_state.pop(f"review_error_{record.image_id}", None)
-    st.session_state["queue_message"] = "Review saved."
-    if next_image_id is not None:
-        st.session_state["selected_image_id"] = next_image_id
-
-
-def _reopen_review(record_id: str) -> None:
-    reviews = dict(st.session_state.get("reviews", {}))
-    if record_id not in reviews:
-        return
-    state = dict(reviews[record_id])
-    state["reviewed"] = False
-    state["reviewed_at_utc"] = ""
-    state["group_id_format_validated"] = False
-    state.pop("review_validation_version", None)
-    for key in (
-        "suggested_priority_at_review",
-        "priority_source_at_review",
-        "priority_method_at_review",
-        "priority_fallback_reason_at_review",
-        "review_first_proxy_score_at_review",
-        "attention_provider_at_review",
-        "embedding_model_at_review",
-        "embedding_at_review",
-    ):
-        state.pop(key, None)
-    reviews[record_id] = state
-    st.session_state["reviews"] = reviews
-    st.session_state[f"reviewed_{record_id}"] = False
-
-
-def _sync_queue_selection(widget_key: str) -> None:
-    """Copy a manual dropdown selection into the navigation state."""
-
-    selected_id = st.session_state.get(widget_key)
-    if selected_id:
-        st.session_state["selected_image_id"] = selected_id
-
-
-def _navigate_queue(
-    image_ids: tuple[str, ...],
-    direction: int,
-    selection_widget_key: str,
-) -> None:
-    """Move one position from the selection present when the click executes."""
-
-    if not image_ids or direction not in (-1, 1):
-        return
-    selected_id = st.session_state.get("selected_image_id")
-    try:
-        selected_index = image_ids.index(selected_id)
-    except ValueError:
-        selected_index = 0
-    target_index = max(0, min(selected_index + direction, len(image_ids) - 1))
-    target_id = image_ids[target_index]
-    st.session_state["selected_image_id"] = target_id
-    st.session_state[selection_widget_key] = target_id
-
-
-def _apply_group_to_source(record, records: list) -> None:
-    reviews = dict(st.session_state.get("reviews", {}))
-    try:
-        group_id = validate_group_id(st.session_state.get(f"group_{record.image_id}", ""))
-    except ValueError as exc:
-        st.session_state[f"group_apply_message_{record.image_id}"] = str(exc)
-        return
-    updated = 0
-    for candidate in records:
-        if candidate.source_name != record.source_name:
-            continue
-        state = dict(reviews[candidate.image_id])
-        if str(state.get("group_id", "")).strip():
-            continue
-        state["group_id"] = group_id
-        reviews[candidate.image_id] = state
-        st.session_state[f"group_{candidate.image_id}"] = group_id
-        updated += 1
-    st.session_state["reviews"] = reviews
-    st.session_state[f"group_apply_message_{record.image_id}"] = (
-        f"Applied {group_id} to {updated} ungrouped image(s) from this uploaded source."
-    )
-
-
-def _record_sort_key(record, reviews: dict[str, dict[str, object]]) -> tuple:
-    score = record.triage.review_first_score
-    sortable_score = float(score) if score is not None and math.isfinite(float(score)) else -1.0
-    return (
-        priority_sort_key(str(reviews[record.image_id]["priority"])),
-        -sortable_score,
-        record.display_name.casefold(),
-    )
-
-
-def _filter_records(
-    records: list,
-    reviews: dict[str, dict[str, object]],
-    status_filter: str,
-    priority_filter: list[str],
-    group_filter: str,
-) -> list:
-    filtered = []
-    for record in records:
-        state = reviews[record.image_id]
-        reviewed = bool(state.get("reviewed", False))
-        if status_filter == "Awaiting" and reviewed:
-            continue
-        if status_filter == "Reviewed" and not reviewed:
-            continue
-        if state.get("priority") not in priority_filter:
-            continue
-        group_id = str(state.get("group_id", "")).strip()
-        if group_filter == "Ungrouped" and group_id:
-            continue
-        if group_filter not in ("All groups", "Ungrouped") and group_id != group_filter:
-            continue
-        filtered.append(record)
-    return filtered
-
-
-def _render_skipped_files(batch: BatchResult) -> None:
-    if not batch.skipped:
-        return
-    with st.expander(f"Skipped or failed files ({len(batch.skipped)})", expanded=True):
-        rows = [
-            {
-                "Uploaded source": item.source_name,
-                "File": item.file_name,
-                "Reason": item.reason,
-            }
-            for item in batch.skipped
-        ]
-        st.dataframe(rows, hide_index=True, width="stretch")
-
-
-def _render_safety_limitations() -> None:
-    with st.expander("Safety and limitations", expanded=False):
-        limitations = [
-            "No cancer classifier is loaded, and no diagnosis is produced.",
-            "Proxy scores are not calibrated probabilities.",
-            "Threshold-dependent metrics apply only to the displayed classification threshold.",
-            "MHIST contains colorectal-polyp images; other tissues are outside the demonstrated domain.",
-            "Patient/case-level split independence could not be independently verified for MHIST.",
-            "Domain status is reviewer-declared, not automatically detected.",
-            (
-                "The app enforces group-ID formatting but cannot determine whether text "
-                "contains identifying information; de-identification is the reviewer's "
-                "responsibility."
-            ),
-            (
-                "The time estimate covers only unusable or failed inputs and does not claim "
-                "that priority ranking saves time."
-            ),
-            "Human review is required for every image.",
-        ]
-        for limitation in limitations:
-            st.write(f"• {limitation}")
-
-
-def _render_evaluation_curves(overall: dict[str, object]) -> None:
-    """Render validated held-out ROC and precision-recall coordinates."""
-
-    st.markdown("#### Threshold-independent diagnostic curves")
-    roc = overall.get("roc_curve")
-    precision_recall = overall.get("precision_recall_curve")
-    if not isinstance(roc, dict) or not isinstance(precision_recall, dict):
-        st.info(
-            "ROC and precision-recall coordinates are not present in this evaluation "
-            "artifact. Retrain the local head with the current training script to add them."
-        )
-        return
-    if go is None:
-        st.dataframe(
-            [
-                {
-                    "Diagnostic": "ROC curve",
-                    "Points": len(roc.get("false_positive_rate", [])),
-                    "Summary": f"ROC-AUC {float(overall['roc_auc']):.3f}",
-                },
-                {
-                    "Diagnostic": "Precision-recall curve",
-                    "Points": len(precision_recall.get("recall", [])),
-                    "Summary": f"Average precision {float(overall['average_precision']):.3f}",
-                },
-            ],
-            hide_index=True,
-            width="stretch",
-        )
-        return
-
-    sample_count = int(overall["sample_count"])
-    chart_columns = st.columns(2)
-    chart_columns[0].markdown("##### ROC curve")
-    chart_columns[0].caption(
-        f"Held-out MHIST agreement-proxy test split (n={sample_count:,}); "
-        "Review First is the positive class."
-    )
-    roc_figure = go.Figure()
-    roc_figure.add_trace(
-        go.Scatter(
-            x=roc["false_positive_rate"],
-            y=roc["true_positive_rate"],
-            mode="lines",
-            name=f"Head (AUC {float(overall['roc_auc']):.3f})",
-            line=dict(color="#2563eb", width=3),
-            hovertemplate=(
-                "False-positive rate %{x:.3f}<br>True-positive rate %{y:.3f}"
-                "<extra></extra>"
-            ),
-        )
-    )
-    roc_figure.add_trace(
-        go.Scatter(
-            x=[0.0, 1.0],
-            y=[0.0, 1.0],
-            mode="lines",
-            name="No-discrimination reference",
-            line=dict(color="#94a3b8", width=2, dash="dash"),
-            hoverinfo="skip",
-        )
-    )
-    roc_figure.update_layout(
-        height=360,
-        margin=dict(l=20, r=20, t=45, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
-        xaxis=dict(title="False-positive rate", range=[0.0, 1.0]),
-        yaxis=dict(title="True-positive rate", range=[0.0, 1.0]),
-    )
-    chart_columns[0].plotly_chart(
-        roc_figure, width="stretch", key="evaluation_roc_curve"
-    )
-
-    baseline = float(precision_recall["baseline_precision"])
-    chart_columns[1].markdown("##### Precision-recall curve")
-    chart_columns[1].caption(
-        f"Held-out MHIST agreement-proxy test split (n={sample_count:,}); "
-        f"Review First prevalence is {baseline:.1%}."
-    )
-    pr_figure = go.Figure()
-    pr_figure.add_trace(
-        go.Scatter(
-            x=precision_recall["recall"],
-            y=precision_recall["precision"],
-            mode="lines",
-            name=f"Head (AP {float(overall['average_precision']):.3f})",
-            line=dict(color="#d97706", width=3),
-            hovertemplate="Recall %{x:.3f}<br>Precision %{y:.3f}<extra></extra>",
-        )
-    )
-    pr_figure.add_trace(
-        go.Scatter(
-            x=[0.0, 1.0],
-            y=[baseline, baseline],
-            mode="lines",
-            name=f"Class prevalence ({baseline:.1%})",
-            line=dict(color="#94a3b8", width=2, dash="dash"),
-            hoverinfo="skip",
-        )
-    )
-    pr_figure.update_layout(
-        height=360,
-        margin=dict(l=20, r=20, t=45, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
-        xaxis=dict(title="Recall", range=[0.0, 1.0]),
-        yaxis=dict(title="Precision", range=[0.0, 1.0]),
-    )
-    chart_columns[1].plotly_chart(
-        pr_figure, width="stretch", key="evaluation_precision_recall_curve"
-    )
-    st.caption(
-        "These curves evaluate a held-out annotator-agreement proxy, not disease or "
-        "cancer classification. Precision-recall is especially useful here because "
-        f"Review First represents {baseline:.1%} of the test split."
-    )
-
-
-def _render_threshold_explorer(overall: dict[str, object], active_threshold: float) -> None:
-    """Render precomputed held-out proxy queue snapshots for a safe threshold demo."""
-
-    rows = overall.get("threshold_sweep")
-    if not isinstance(rows, list) or not rows:
-        st.info(
-            "Interactive threshold snapshots are unavailable in this evaluation artifact. "
-            "Retrain the local head with the current training script to add them."
-        )
-        return
-    valid_rows = [
-        row
-        for row in rows
-        if isinstance(row, dict) and 0.0 < float(row.get("threshold", 0.0)) < 1.0
-    ]
-    if not valid_rows:
-        st.info("Interactive threshold snapshots are unavailable.")
-        return
-    thresholds = sorted(float(row["threshold"]) for row in valid_rows)
-    default_index = min(
-        range(len(thresholds)), key=lambda index: abs(thresholds[index] - active_threshold)
-    )
-    st.markdown("#### Interactive proxy-score threshold explorer")
-    st.caption(
-        "This changes only the displayed held-out MHIST agreement-proxy queue summary; "
-        "it does not change the active model or represent calibrated probability."
-    )
-    selected_threshold = st.select_slider(
-        "Displayed proxy-score threshold",
-        options=thresholds,
-        value=thresholds[default_index],
-        format_func=lambda value: f"{value:.2f}",
-        key="evaluation_threshold_explorer",
-    )
-    selected = min(
-        valid_rows, key=lambda row: abs(float(row["threshold"]) - selected_threshold)
-    )
-    metrics = st.columns(4)
-    metrics[0].metric("Proxy queue size", int(selected["queue_size"]))
-    metrics[1].metric("Proxy queue fraction", f"{float(selected['queue_fraction']):.1%}")
-    metrics[2].metric("Proxy-label capture", f"{float(selected['capture_fraction']):.1%}")
-    metrics[3].metric("Proxy precision", f"{float(selected['precision']):.1%}")
-
-
-def _render_annotator_agreement_distribution(report: dict[str, object]) -> None:
-    """Show the human-label ambiguity that defines the experimental target."""
-
-    rows = report.get("annotator_agreement_distribution")
-    if not isinstance(rows, list) or not rows:
-        st.info(
-            "The annotator-agreement distribution is unavailable in this evaluation "
-            "artifact. Retrain the local head with the current training script to add it."
-        )
-        return
-    display_rows = [
-        row
-        for row in rows
-        if isinstance(row, dict)
-        and isinstance(row.get("label"), str)
-        and "sample_count" in row
-        and "proxy_priority" in row
-    ]
-    if not display_rows:
-        st.info("The annotator-agreement distribution is unavailable.")
-        return
-    st.markdown("#### MHIST annotator-agreement distribution")
-    st.caption(
-        "Each image was assessed by seven pathologists. The experimental proxy groups "
-        "4–5 of 7 majority agreement as Review First and 6–7 of 7 as Lower Priority."
-    )
-    if go is None:
-        st.dataframe(display_rows, hide_index=True, width="stretch")
-        return
-    figure = go.Figure()
-    colors = {REVIEW_FIRST: "#2563eb", LOWER_PRIORITY: "#7c3aed"}
-    for proxy_priority in (REVIEW_FIRST, LOWER_PRIORITY):
-        subset = [row for row in display_rows if row["proxy_priority"] == proxy_priority]
-        if not subset:
-            continue
-        figure.add_trace(
-            go.Bar(
-                x=[str(row["label"]) for row in subset],
-                y=[int(row["sample_count"]) for row in subset],
-                name=proxy_priority,
-                marker_color=colors[proxy_priority],
-                customdata=[[float(row.get("fraction", 0.0))] for row in subset],
-                hovertemplate="%{x}<br>Images: %{y}<br>Dataset share: %{customdata[0]:.1%}<extra></extra>",
-            )
-        )
-    figure.update_layout(
-        barmode="stack",
-        height=330,
-        margin=dict(l=20, r=20, t=30, b=20),
-        yaxis=dict(title="MHIST images"),
-        xaxis=dict(title="Largest agreeing annotator group"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
-    )
-    st.plotly_chart(figure, width="stretch", key="mhist_annotator_agreement")
-
-
-def _render_model_card(review_model_status, overall: dict[str, object]) -> None:
-    """Show a compact, source-backed scope panel for public-demo viewers."""
-
-    metadata: dict[str, object] = {}
-    try:
-        loaded = json.loads(review_model_status.metadata_path.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            metadata = loaded
-    except (OSError, ValueError, TypeError):
-        pass
-    st.markdown("#### Dataset and model card")
-    st.dataframe(
-        [
-            {"Field": "Dataset", "Value": "MHIST colorectal-polyp image patches"},
-            {
-                "Field": "Split",
-                "Value": (
-                    f"Official MHIST train/test partitions: "
-                    f"{int(metadata.get('train_sample_count', 0)):,} train and "
-                    f"{int(overall.get('sample_count', 0)):,} held-out test images"
-                ),
-            },
-            {
-                "Field": "Target",
-                "Value": str(metadata.get("target_definition", "Annotator-agreement proxy")),
-            },
-            {"Field": "Model", "Value": str(metadata.get("model_type", "Local prototype head"))},
-            {
-                "Field": "Limit", "Value": (
-                    "No patient/case/slide IDs were supplied; patient-level split "
-                    "independence cannot be verified."
-                ),
-            },
-            {
-                "Field": "Use", "Value": "Research/education review ordering only; human review required."},
-        ],
-        hide_index=True,
-        width="stretch",
-    )
-
-
-def _render_current_batch_proxy_outcomes(
-    batch: BatchResult,
-    reviews: dict[str, dict[str, object]],
-) -> None:
-    """Show reviewer outcomes across score bands without implying calibration."""
-
-    bin_edges = np.linspace(0.0, 1.0, 11)
-    buckets = [
-        {"label": f"{bin_edges[index]:.1f}–{bin_edges[index + 1]:.1f}", "Confirmed": 0,
-         "Overridden": 0, "Awaiting review": 0}
-        for index in range(len(bin_edges) - 1)
-    ]
-    available = 0
-    reviewed = 0
-    for record in batch.records:
-        if not bool(getattr(record.triage, "is_experimental_model", False)):
-            continue
-        raw_score = getattr(record.triage, "review_first_score", None)
-        try:
-            score = float(raw_score)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
-            continue
-        available += 1
-        index = min(int(score * 10), 9)
-        review = reviews.get(record.image_id, {})
-        if not bool(review.get("reviewed", False)):
-            outcome = "Awaiting review"
-        else:
-            reviewed += 1
-            outcome = (
-                "Confirmed"
-                if review.get("priority") == record.triage.suggested_priority
-                else "Overridden"
-            )
-        buckets[index][outcome] += 1
-    if not available:
-        return
-    st.markdown("#### Current-batch proxy scores and reviewer outcomes")
-    st.caption(
-        f"{reviewed} of {available} experimental-head outputs have a completed review. "
-        "Score bands describe the current batch only and are not calibration evidence."
-    )
-    if go is None:
-        st.dataframe(buckets, hide_index=True, width="stretch")
-        return
-    figure = go.Figure()
-    for outcome, color in (
-        ("Confirmed", "#2563eb"),
-        ("Overridden", "#d97706"),
-        ("Awaiting review", "#94a3b8"),
-    ):
-        figure.add_trace(
-            go.Bar(
-                x=[bucket["label"] for bucket in buckets],
-                y=[bucket[outcome] for bucket in buckets],
-                name=outcome,
-                marker_color=color,
-            )
-        )
-    figure.update_layout(
-        barmode="stack",
-        height=330,
-        margin=dict(l=20, r=20, t=30, b=20),
-        yaxis=dict(title="Current-batch images"),
-        xaxis=dict(title="Agreement-proxy score band"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
-    )
-    st.plotly_chart(figure, width="stretch", key="current_batch_proxy_outcomes")
-
-
-def _embedding_for_projection(record, review: dict[str, object]) -> tuple[float, ...] | None:
-    reviewed = bool(review.get("reviewed", False))
-    if reviewed and "embedding_at_review" in review:
-        raw_embedding = review.get("embedding_at_review")
-    else:
-        raw_embedding = getattr(record.attention, "embedding", None)
-    if raw_embedding is None:
-        return None
-    try:
-        values = tuple(float(value) for value in raw_embedding)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if len(values) < 2 or not all(math.isfinite(value) for value in values):
-        return None
-    return values
-
-
-def _projection_source_label(record, review: dict[str, object]) -> str:
-    reviewed = bool(review.get("reviewed", False))
-    method = str(
-        review.get("priority_method_at_review")
-        if reviewed and "priority_method_at_review" in review
-        else getattr(record.triage, "priority_method", "deterministic")
-    )
-    fallback_reason = (
-        review.get("priority_fallback_reason_at_review")
-        if reviewed and "priority_fallback_reason_at_review" in review
-        else getattr(record.triage, "fallback_reason", None)
-    )
-    normalized = method.casefold().replace("-", "_").replace(" ", "_")
-    if "quality" in normalized:
-        return "Quality gate"
-    if "experimental" in normalized or "review_head" in normalized:
-        return "Experimental head"
-    if fallback_reason is not None and str(fallback_reason).strip():
-        return "Deterministic runtime fallback"
-    return "Deterministic rule"
-
-
-def _projection_model_label(record, review: dict[str, object]) -> str:
-    reviewed = bool(review.get("reviewed", False))
-    value = (
-        review.get("embedding_model_at_review")
-        if reviewed and "embedding_model_at_review" in review
-        else getattr(record.attention, "embedding_model", None)
-    )
-    return str(value or "Unknown embedding model")
-
-
-def _embedding_scatter_figure(
-    rows: list[dict[str, object]],
-    *,
-    color_field: str,
-    title: str,
-    subtitle: str,
-):
-    palette = {
-        REVIEW_FIRST: "#2563eb",
-        NEEDS_BETTER_IMAGE: "#d97706",
-        LOWER_PRIORITY: "#7c3aed",
-        "Awaiting review": "#94a3b8",
-        UNKNOWN_OR_OTHER_DOMAIN: "#d97706",
-        MHIST_LIKE_DOMAIN: "#2563eb",
-        "Experimental head": "#2563eb",
-        "Deterministic runtime fallback": "#d97706",
-        "Deterministic rule": "#7c3aed",
-        "Quality gate": "#64748b",
+def _providers() -> dict[str, Any]:
+    uni, hibou, head = get_uni_provider_status(), get_hibou_provider_status(), get_review_model_status()
+    return {
+        "uni": {"ready": uni.ready, "summary": uni.summary, "detail": uni.detail},
+        "hibou": {"ready": hibou.ready, "summary": hibou.summary, "detail": hibou.detail},
+        "review_model": {
+            "ready": head.ready,
+            "summary": head.summary,
+            "detail": head.detail,
+            "metrics": head.metrics,
+            "evaluation_valid": head.evaluation_valid,
+            "evaluation_error": head.evaluation_error,
+        },
     }
-    symbols = ("circle", "diamond", "square", "triangle-up", "cross")
-    categories = list(dict.fromkeys(str(row[color_field]) for row in rows))
-    figure = go.Figure()
-    for category_index, category in enumerate(categories):
-        category_rows = [row for row in rows if str(row[color_field]) == category]
-        figure.add_trace(
-            go.Scattergl(
-                x=[row["x"] for row in category_rows],
-                y=[row["y"] for row in category_rows],
-                mode="markers",
-                name=category,
-                marker=dict(
-                    color=palette.get(category, "#0f766e"),
-                    symbol=symbols[category_index % len(symbols)],
-                    size=10,
-                    line=dict(color="#e2e8f0", width=0.8),
-                    opacity=0.82,
-                ),
-                customdata=[
-                    [
-                        row["filename"],
-                        row["review_status"],
-                        row["effective_priority"],
-                        row["proxy_score"],
-                    ]
-                    for row in category_rows
-                ],
-                hovertemplate=(
-                    "%{customdata[0]}<br>%{customdata[1]}<br>Effective priority: "
-                    "%{customdata[2]}<br>Agreement-proxy score: %{customdata[3]}"
-                    "<extra></extra>"
-                ),
-            )
-        )
-    figure.update_layout(
-        title=f"{title}<br><sup>{subtitle}</sup>",
-        height=470,
-        margin=dict(l=20, r=20, t=80, b=20),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.0),
-        xaxis=dict(title="t-SNE dimension 1", showgrid=False, zeroline=False),
-        yaxis=dict(title="t-SNE dimension 2", showgrid=False, zeroline=False),
-    )
-    return figure
 
 
-def _render_embedding_projection(
-    batch: BatchResult,
-    reviews: dict[str, dict[str, object]],
-    domain_label: str,
-) -> None:
-    st.markdown("#### Local feature-embedding projection")
-    candidates: list[tuple[object, dict[str, object], tuple[float, ...], str]] = []
-    excluded = 0
-    for record in batch.records:
-        review = reviews.get(record.image_id, {})
-        embedding = _embedding_for_projection(record, review)
-        if embedding is None:
-            excluded += 1
-            continue
-        candidates.append((record, review, embedding, _projection_model_label(record, review)))
-
-    st.caption(
-        f"{len(candidates)} of {len(batch.records)} valid images have a finite "
-        f"model embedding; {excluded} are excluded from this view."
-    )
-    if not candidates:
-        st.info("No valid local-model embeddings are available for a 2D projection.")
-        return
-    model_labels = sorted({candidate[3] for candidate in candidates})
-    if len(model_labels) != 1:
-        st.warning(
-            "The batch contains embeddings from different model identities, so they are "
-            "not projected together: " + ", ".join(model_labels)
-        )
-        return
-    embeddings = tuple(candidate[2] for candidate in candidates)
-    try:
-        with st.spinner("Computing the current-batch t-SNE projection..."):
-            projection = _project_embeddings_cached(
-                embeddings, EMBEDDING_PROJECTION_CACHE_VERSION
-            )
-    except ProjectionUnavailable as exc:
-        st.info(str(exc))
-        return
-    except Exception as exc:
-        st.warning(f"The t-SNE projection could not be generated ({type(exc).__name__}).")
-        return
-
-    rows: list[dict[str, object]] = []
-    for (record, review, _embedding, _model_label), (x_value, y_value) in zip(
-        candidates, projection.coordinates, strict=True
-    ):
-        reviewed = bool(review.get("reviewed", False))
-        selected_priority = str(review.get("priority", ""))
-        effective_priority = (
-            selected_priority
-            if selected_priority in PRIORITIES
-            else record.triage.suggested_priority
-        )
-        score = record.triage.review_first_score
-        score_label = (
-            f"{float(score):.3f}"
-            if score is not None and math.isfinite(float(score))
-            else "N/A"
-        )
-        rows.append(
-            {
-                "x": x_value,
-                "y": y_value,
-                "filename": record.display_name,
-                "review_status": "Reviewed" if reviewed else "Awaiting review",
-                "effective_priority": effective_priority,
-                "proxy_score": score_label,
-                "reviewer_priority": effective_priority if reviewed else "Awaiting review",
-                "domain_declaration": domain_label,
-                "priority_source": _projection_source_label(record, review),
-            }
-        )
-
-    st.caption(
-        f"{projection.method}; n={projection.sample_count}, perplexity "
-        f"{projection.perplexity:.2f}, pre-reduced to {projection.reduced_dimension} "
-        f"dimensions. Coordinates are batch-relative and descriptive only."
-    )
-    if go is None:
-        st.dataframe(rows, hide_index=True, width="stretch")
-        return
-
-    views = (
-        (
-            "Reviewer-confirmed priority",
-            "reviewer_priority",
-            "Local feature-embedding projection by reviewer-confirmed priority",
-            "Awaiting images remain explicitly unconfirmed",
-        ),
-        (
-            "Domain declaration",
-            "domain_declaration",
-            "Local feature-embedding projection by domain declaration",
-            "Batch-level reviewer declaration; tissue is not inferred automatically",
-        ),
-        (
-            "Model / fallback source",
-            "priority_source",
-            "Local feature-embedding projection by priority source",
-            "Structured experimental, deterministic, fallback, and quality-gate provenance",
-        ),
-    )
-    view_tabs = st.tabs([view[0] for view in views])
-    for tab, (_tab_label, color_field, title, subtitle) in zip(
-        view_tabs, views, strict=True
-    ):
-        with tab:
-            st.plotly_chart(
-                _embedding_scatter_figure(
-                    rows,
-                    color_field=color_field,
-                    title=title,
-                    subtitle=subtitle,
-                ),
-                width="stretch",
-                key=f"embedding_projection_{color_field}",
-            )
-    st.caption(
-        "t-SNE axes and distances are not scores, biological classes, diagnostic "
-        "evidence, or proof of meaningful clusters. Adding images can change the layout."
-    )
+def _record_json(record: Any, review: dict[str, Any]) -> dict[str, Any]:
+    quality, triage, attention = record.quality, record.triage, record.attention
+    return {
+        "id": record.image_id,
+        "name": record.display_name,
+        "source_name": record.source_name,
+        "file_type": record.file_type,
+        "size": format_file_size(record.size_bytes),
+        "dimensions": [record.width, record.height],
+        "quality": {"adequate": quality.adequate, "reasons": quality.reasons, "advisories": quality.advisories, "metrics": quality.metrics, "issue_codes": quality.issue_codes, "advisory_codes": quality.advisory_codes},
+        "triage": {"suggested_priority": triage.suggested_priority, "explanation": triage.explanation, "priority_source": triage.priority_source, "priority_method": triage.priority_method, "review_first_score": triage.review_first_score, "fallback_reason": triage.fallback_reason},
+        "attention": {"provider_name": attention.provider_name, "explanation": attention.explanation, "overlay_caption": attention.overlay_caption, "embedding_model": attention.embedding_model, "embedding_available": attention.embedding is not None},
+        "metadata_notes": record.metadata_notes,
+        "review": review,
+        "images": {kind: f"/api/images/{record.image_id}/{kind}" for kind in ("original", "overlay", "heatmap")},
+    }
 
 
-def _render_model_evaluation(review_model_status) -> None:
-    st.subheader("MHIST Annotator-Agreement Proxy Evaluation — Not Cancer Accuracy")
-    st.caption(
-        "These values measure a held-out MHIST annotator-agreement proxy. They do not "
-        "measure cancer detection, diagnosis accuracy, or clinical urgency."
-    )
-    if not review_model_status.ready:
-        st.info("Evaluation metrics unavailable because the local prototype head is unavailable.")
-        return
-    if not getattr(review_model_status, "evaluation_valid", False):
-        evaluation_error = (
-            getattr(review_model_status, "evaluation_error", None)
-            or "Evaluation metrics unavailable."
-        )
-        if "threshold mismatch" in evaluation_error.casefold():
-            st.warning(
-                "Evaluation artifact mismatch. "
-                f"{evaluation_error} Threshold-dependent metrics are hidden; "
-                "inference remains available."
-            )
-        else:
-            st.warning(f"{evaluation_error} Inference remains available.")
-        return
-    report = getattr(review_model_status, "evaluation_report", {})
-    overall = report.get("overall_test_metrics", {})
-    threshold = getattr(review_model_status, "decision_threshold", None)
-    if threshold is None:
-        st.warning("Evaluation metrics unavailable because the classification threshold is missing.")
-        return
-
-    _render_model_card(review_model_status, overall)
-    _render_annotator_agreement_distribution(report)
-
-    top = st.columns(4)
-    top[0].metric("Classification threshold used", f"{threshold:.3f}")
-    top[1].metric("Held-out test images", int(overall["sample_count"]))
-    top[2].metric("Balanced accuracy", f"{float(overall['balanced_accuracy']):.3f}")
-    top[3].metric("ROC-AUC", f"{float(overall['roc_auc']):.3f}")
-    second = st.columns(4)
-    second[0].metric("Average precision", f"{float(overall['average_precision']):.3f}")
-    second[1].metric(
-        "Review First precision",
-        f"{float(overall['review_first_precision']):.3f}",
-    )
-    second[2].metric(
-        "Review First recall", f"{float(overall['review_first_recall']):.3f}"
-    )
-    second[3].metric("Review First F1", f"{float(overall['review_first_f1']):.3f}")
-    third = st.columns(3)
-    third[0].metric(
-        "Lower Priority specificity",
-        f"{float(overall['lower_priority_specificity']):.3f}",
-    )
-    predicted_count = int(overall["predicted_review_first_count"])
-    predicted_fraction = float(overall["predicted_review_first_fraction"])
-    third[1].metric("Predicted Review First queue", predicted_count)
-    third[2].metric("Predicted queue fraction", f"{predicted_fraction:.1%}")
-
-    _render_evaluation_curves(overall)
-    _render_threshold_explorer(overall, float(threshold))
-
-    matrix = overall["confusion_matrix"]
-    values = matrix["values"]
-    row_labels = matrix["row_labels"]
-    column_labels = matrix["column_labels"]
-    st.markdown("#### Held-out confusion matrix")
-    st.caption("Rows are predicted proxy labels; columns are actual proxy labels.")
-    if (
-        len(values) == 2
-        and all(len(row) == 2 for row in values)
-        and len(row_labels) == 2
-        and len(column_labels) == 2
-    ):
-        if go is not None:
-            figure = go.Figure(
-                data=go.Heatmap(
-                    z=values,
-                    x=[f"Actual {label}" for label in column_labels],
-                    y=[f"Predicted {label}" for label in row_labels],
-                    colorscale="Blues",
-                    showscale=False,
-                    text=values,
-                    texttemplate="%{text}",
-                )
-            )
-            figure.update_layout(height=330, margin=dict(l=20, r=20, t=20, b=20))
-            st.plotly_chart(figure, width="stretch", key="proxy_confusion_matrix")
-        else:
-            st.dataframe(
-                [
-                    {
-                        "Predicted proxy": row_labels[row_index],
-                        f"Actual {column_labels[0]}": values[row_index][0],
-                        f"Actual {column_labels[1]}": values[row_index][1],
-                    }
-                    for row_index in range(2)
-                ],
-                hide_index=True,
-                width="stretch",
-            )
-    else:
-        st.info("Confusion-matrix values are unavailable.")
-
-    capture_rows = overall["review_first_capture_by_queue_fraction"]
-    st.markdown("#### Review First captured near the top of the queue")
-    if capture_rows:
-        st.dataframe(
-            [
-                {
-                    "Top queue fraction": f"{float(row['queue_fraction']):.0%}",
-                    "Queue size": int(row["queue_size"]),
-                    "Review First captured": (
-                        f"{int(row['captured_review_first_count'])}/"
-                        f"{int(row['total_review_first_count'])}"
-                    ),
-                    "Capture": f"{float(row['capture_fraction']):.1%}",
-                }
-                for row in capture_rows
-            ],
-            hide_index=True,
-            width="stretch",
-        )
-    else:
-        st.info("Top-of-queue capture metrics are unavailable.")
-
-
-
-def _render_operational_dashboard(
-    batch: BatchResult,
-    reviews: dict[str, dict[str, object]],
-    domain_label: str,
-    screening_seconds: float,
-    feature_provider_enabled: bool,
-    use_review_model: bool,
-) -> None:
+def _workspace_json(space: Workspace) -> dict[str, Any]:
+    batch = space.batch
+    if batch is None:
+        return {"disclaimer": DISCLAIMER, "providers": _providers(), "batch": None}
     metrics = build_operational_metrics(
-        batch,
-        reviews,
-        domain_declaration=domain_label,
-        screening_seconds_per_image=screening_seconds,
-        embedding_expected=feature_provider_enabled,
+        batch, space.reviews,
+        domain_declaration=(MHIST_LIKE_DOMAIN if space.domain_context == "mhist_like_colorectal_polyp" else UNKNOWN_OR_OTHER_DOMAIN),
+        screening_seconds_per_image=space.screening_seconds,
+        embedding_expected=space.provider_kind != "deterministic",
     )
-    st.subheader("Operational Dashboard")
-    st.markdown("#### Progress and queue")
-    first = st.columns(4)
-    first[0].metric("Total files uploaded", batch.uploaded_count)
-    first[1].metric("Valid images", metrics.total_images)
-    first[2].metric("Awaiting review", metrics.awaiting_count)
-    first[3].metric("Reviewed images", metrics.reviewed_count)
-    second = st.columns(4)
-    second[0].metric("Review complete", f"{metrics.reviewed_percentage:.0f}%")
-    second[1].metric(REVIEW_FIRST, metrics.effective_priority_counts[REVIEW_FIRST])
-    second[2].metric(
-        NEEDS_BETTER_IMAGE,
-        metrics.effective_priority_counts[NEEDS_BETTER_IMAGE],
-    )
-    second[3].metric(LOWER_PRIORITY, metrics.effective_priority_counts[LOWER_PRIORITY])
-    st.markdown("#### Quality gate")
-    quality_summary = st.columns(2)
-    quality_summary[0].metric("Images passing quality checks", metrics.quality_pass_count)
-    quality_summary[1].metric("Corrupted or skipped files", metrics.skipped_count)
-    issue_labels = {
-        "blur": "Blur failures",
-        "small_dimensions": "Small-dimension failures",
-        "excessive_darkness": "Excessively dark",
-        "excessive_brightness": "Excessively bright",
-        "blank_or_nearly_uniform": "Blank/nearly uniform",
+    return {
+        "disclaimer": DISCLAIMER,
+        "providers": _providers(),
+        "settings": {"domain_context": space.domain_context, "screening_seconds": space.screening_seconds, "provider_kind": space.provider_kind, "use_review_model": space.use_review_model},
+        "batch": {
+            "uploaded_count": batch.uploaded_count,
+            "records": [_record_json(record, space.reviews[record.image_id]) for record in batch.records],
+            "skipped": [asdict(item) for item in batch.skipped],
+            "metrics": asdict(metrics),
+        },
     }
-    quality_columns = st.columns(6)
-    for index, (code, label) in enumerate(issue_labels.items()):
-        quality_columns[index].metric(label, metrics.quality_issue_counts.get(code, 0))
-    quality_columns[5].metric(
-        "Crop advisories",
-        metrics.quality_advisory_counts.get("possible_edge_truncation", 0),
-    )
-
-    st.markdown("#### Model pipeline health")
-    st.write(
-        f"**Experimental head:** {'Enabled' if use_review_model else 'Disabled'}  •  "
-        f"**Local feature exploration:** {'Enabled' if feature_provider_enabled else 'Disabled'}"
-    )
-    model_columns = st.columns(5)
-    model_columns[0].metric("Model embedding successes", metrics.embedding_success_count)
-    model_columns[1].metric("Model embedding failures", metrics.embedding_failure_count)
-    model_columns[2].metric(
-        "Model embedding not attempted", metrics.embedding_not_attempted_count
-    )
-    model_columns[3].metric(
-        "Experimental-head predictions", metrics.experimental_model_prediction_count
-    )
-    model_columns[4].metric(
-        "Deterministic rule outputs", metrics.deterministic_prediction_count
-    )
-    pipeline_columns = st.columns(4)
-    pipeline_columns[0].metric(
-        "Deterministic fallback predictions",
-        metrics.deterministic_fallback_prediction_count,
-    )
-    pipeline_columns[1].metric("Quality-gated images", metrics.quality_gate_count)
-    pipeline_columns[2].metric("Runtime fallback events", metrics.runtime_fallback_count)
-    pipeline_columns[3].metric("Out-of-domain warnings", metrics.domain_warning_count)
-    if metrics.domain_warning_count:
-        st.warning(
-            f"{metrics.domain_warning_count} model-scored image(s) have an unknown or "
-            "declared non-MHIST domain. This is a reviewer declaration, not automatic detection."
-        )
-    if metrics.proxy_scores:
-        st.metric(
-            "Mean experimental agreement-proxy score",
-            f"{metrics.mean_proxy_score:.3f}",
-            help="This is not calibrated probability or clinical confidence.",
-        )
-        if go is not None:
-            histogram = go.Figure(
-                data=go.Histogram(
-                    x=list(metrics.proxy_scores),
-                    nbinsx=10,
-                    marker=dict(color="#2563eb", line=dict(color="#1e3a8a", width=1)),
-                )
-            )
-            histogram.update_layout(
-                title=(
-                    "Experimental agreement-proxy score distribution"
-                    f"<br><sup>Current batch; n={metrics.proxy_score_count}</sup>"
-                ),
-                height=280,
-                margin=dict(l=20, r=20, t=70, b=20),
-                xaxis_title="Experimental agreement-proxy score",
-                yaxis_title="Images",
-            )
-            st.plotly_chart(histogram, width="stretch", key="proxy_score_histogram")
-        else:
-            st.dataframe(
-                [{"Experimental agreement-proxy score": score} for score in metrics.proxy_scores],
-                hide_index=True,
-                width="stretch",
-            )
-        st.caption("Score distribution is descriptive only and is not a diagnosis output.")
-    else:
-        st.info("No experimental proxy scores are available in this batch.")
-    _render_current_batch_proxy_outcomes(batch, reviews)
-
-    st.markdown("#### Domain context")
-    domain_columns = st.columns(2)
-    domain_columns[0].metric(
-        UNKNOWN_OR_OTHER_DOMAIN,
-        metrics.domain_declaration_counts[UNKNOWN_OR_OTHER_DOMAIN],
-    )
-    domain_columns[1].metric(
-        MHIST_LIKE_DOMAIN,
-        metrics.domain_declaration_counts[MHIST_LIKE_DOMAIN],
-    )
-    st.caption(
-        "Counts cover valid images in the current batch. The declaration is batch-level, "
-        "reviewer-supplied, and not inferred from image content."
-    )
-
-    _render_embedding_projection(batch, reviews, domain_label)
-
-    st.markdown("#### Time estimate")
-    st.metric(
-        "Estimated time avoided reviewing unusable images",
-        f"{metrics.estimated_time_avoided_seconds / 60.0:.1f} min",
-    )
-    st.caption(
-        f"Estimate = (Needs Better Image + skipped/failed files) x "
-        f"{metrics.screening_seconds_per_image:.0f} configured seconds per image. "
-        "It is not measured workflow efficiency."
-    )
-
-    st.markdown("#### Review agreement")
-    agreement_columns = st.columns(3)
-    agreement_columns[0].metric("Suggestions confirmed", metrics.suggestion_confirmed_count)
-    agreement_columns[1].metric("Suggestions overridden", metrics.suggestion_overridden_count)
-    agreement_columns[2].metric(
-        "Suggestion–reviewer agreement",
-        "N/A"
-        if metrics.suggestion_agreement_percentage is None
-        else f"{metrics.suggestion_agreement_percentage:.1f}%",
-    )
-    model_agreement_columns = st.columns(4)
-    model_agreement_columns[0].metric(
-        "Experimental-head reviews", metrics.model_reviewed_count
-    )
-    model_agreement_columns[1].metric(
-        "Experimental suggestions confirmed", metrics.model_confirmed_count
-    )
-    model_agreement_columns[2].metric(
-        "Experimental suggestions overridden", metrics.model_overridden_count
-    )
-    model_agreement_columns[3].metric(
-        "Model–reviewer agreement",
-        "N/A"
-        if metrics.model_agreement_percentage is None
-        else f"{metrics.model_agreement_percentage:.1f}%",
-    )
-    st.markdown("##### Experimental-head agreement by suggested priority")
-    st.dataframe(
-        [
-            {
-                "Suggested priority": row.suggested_priority,
-                "Reviewed": row.reviewed_count,
-                "Confirmed": row.confirmed_count,
-                "Overridden": row.overridden_count,
-                "Agreement": (
-                    "N/A"
-                    if row.agreement_percentage is None
-                    else f"{row.agreement_percentage:.1f}%"
-                ),
-            }
-            for row in metrics.model_agreement_by_suggested_priority
-        ],
-        hide_index=True,
-        width="stretch",
-    )
-    st.caption(
-        "Only completed reviews whose saved suggestion came from the experimental head "
-        "are included in the reviewer-model agreement table."
-    )
-    _render_skipped_files(batch)
 
 
-def _render_batch_table(
-    batch: BatchResult,
-    ordered_records: list,
-    reviews: dict[str, dict[str, object]],
-) -> None:
-    st.subheader("Per-image statistics")
-    rows = []
-    for record in ordered_records:
-        state = reviews[record.image_id]
-        selected_priority = str(state.get("priority", ""))
-        effective_priority = (
-            selected_priority
-            if selected_priority in PRIORITIES
-            else record.triage.suggested_priority
-        )
-        score = record.triage.review_first_score
-        proxy_score = (
-            f"{float(score):.3f}"
-            if score is not None and math.isfinite(float(score))
-            else "N/A"
-        )
-        blocking_codes = tuple(getattr(record.quality, "issue_codes", ()) or ())
-        advisory_codes = tuple(getattr(record.quality, "advisory_codes", ()) or ())
-        quality_codes = [f"blocking:{code}" for code in blocking_codes]
-        quality_codes.extend(f"advisory:{code}" for code in advisory_codes)
-        rows.append(
-            {
-                "Filename": record.display_name,
-                "File type": record.file_type,
-                "Dimensions": f"{record.width} × {record.height} px",
-                "File size": format_file_size(record.size_bytes),
-                "Image Quality": (
-                    "Adequate — advisory"
-                    if record.quality.adequate and record.quality.advisories
-                    else "Adequate"
-                    if record.quality.adequate
-                    else "Needs Better Image"
-                ),
-                "Attention source": record.attention.provider_name,
-                "Priority source": record.triage.priority_source,
-                "Suggested priority": record.triage.suggested_priority,
-                "Effective reviewer priority": effective_priority,
-                "Queue sort key": priority_sort_key(effective_priority) + 1,
-                "Experimental agreement-proxy score": proxy_score,
-                "Quality flags/codes": ", ".join(quality_codes) if quality_codes else "None",
-                "Review status": "Reviewed" if state.get("reviewed", False) else "Awaiting",
-                "Case/slide group ID": str(state.get("group_id", "")).strip()
-                or "Ungrouped",
-                "Override status": (
-                    "Overridden"
-                    if bool(state.get("priority_overridden", False))
-                    else "Not overridden"
-                ),
-            }
-        )
-    st.dataframe(rows, hide_index=True, width="stretch")
+def _image_bytes(image: Any) -> bytes:
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
 
 
-def _render_original_resolution(record) -> None:
-    with st.expander("Original-resolution preview"):
-        pixel_count = record.width * record.height
-        if pixel_count <= NATIVE_PREVIEW_PIXEL_LIMIT and max(record.image.size) <= 2400:
-            st.image(
-                record.image,
-                width="content",
-                caption=f"Native image: {record.width} × {record.height} px",
-            )
-        else:
-            preview = record.image.convert("RGB").copy()
-            preview.thumbnail((2000, 2000), Image.Resampling.LANCZOS)
-            st.info(
-                f"The original is {record.width} × {record.height} px. To keep the "
-                "browser responsive, this preview is downscaled to "
-                f"{preview.width} × {preview.height} px."
-            )
-            st.image(preview, width="content")
-
-
-def _render_manual_review_action_panel(
-    record,
-    reviews: dict[str, dict[str, object]],
-    all_records: list,
-    next_unreviewed_id: str | None,
-) -> None:
-    """Render the existing reviewer inputs directly after the image viewers."""
-
-    st.markdown("#### Manual Review")
-    review_locked = bool(reviews[record.image_id].get("reviewed", False))
-    st.text_input(
-        "De-identified case/slide group ID (optional)",
-        key=f"group_{record.image_id}",
-        placeholder="Example: slide-group-001 (needed for grouped model training)",
-        disabled=review_locked,
-        help=(
-            "Optional for review/export. Needed only for later grouped model training. "
-            "When supplied, use 1-64 letters, numbers, hyphens, or underscores."
-        ),
+def _multipart(request: BaseHTTPRequestHandler) -> tuple[dict[str, str], list[UploadPayload]]:
+    content_type = request.headers.get("Content-Type", "")
+    length = int(request.headers.get("Content-Length", "0"))
+    if length <= 0 or length > MAX_REQUEST_BYTES or "multipart/form-data" not in content_type:
+        raise ValueError("Upload must be a multipart request within the 110 MB limit.")
+    message = BytesParser(policy=default).parsebytes(
+        f"Content-Type: {content_type}\r\n\r\n".encode() + request.rfile.read(length)
     )
-    st.button(
-        "Apply this ID to ungrouped images from the same uploaded source",
-        key=f"apply_group_{record.image_id}",
-        on_click=_apply_group_to_source,
-        args=(record, all_records),
-        disabled=review_locked,
-        help=(
-            "Existing group IDs are never overwritten. One ZIP can contain multiple "
-            "cases, so use this only when the uploaded source belongs to one case/slide."
-        ),
-        type="secondary",
-    )
-    group_message = st.session_state.get(f"group_apply_message_{record.image_id}")
-    if group_message:
-        st.caption(group_message)
-    st.text_area(
-        "Reviewer notes (kept in this browser session)",
-        key=f"notes_{record.image_id}",
-        placeholder="Required when overriding the suggested priority...",
-        height=120,
-        disabled=review_locked,
-    )
-    st.selectbox(
-        "Confirm or override the suggested priority",
-        options=PRIORITIES,
-        index=PRIORITIES.index(str(reviews[record.image_id]["priority"])),
-        key=_priority_widget_key(record.image_id),
-        help="Overrides change review order only; they are not medical conclusions.",
-        on_change=_mark_priority_override,
-        args=(record.image_id,),
-        disabled=review_locked,
-    )
-    _sync_selected_review(record.image_id)
-    state = reviews[record.image_id]
-    if bool(state.get("reviewed", False)):
-        st.success("Reviewed for this Streamlit session.")
-        reviewed_suggestion = state.get("suggested_priority_at_review")
-        if reviewed_suggestion:
-            st.caption(
-                "Suggestion saved with this review: "
-                f"{reviewed_suggestion}. Model-setting changes do not rewrite the "
-                "completed review record."
-            )
-        st.button(
-            "Reopen review",
-            key=f"reopen_{record.image_id}",
-            on_click=_reopen_review,
-            args=(record.image_id,),
-            type="secondary",
-        )
-    else:
-        action_columns = st.columns(2)
-        action_columns[0].button(
-            "Save review",
-            key=f"save_{record.image_id}",
-            on_click=_save_review,
-            args=(record, record.image_id),
-            width="stretch",
-            type="primary",
-        )
-        action_columns[1].button(
-            "Save & next unreviewed",
-            key=f"save_next_{record.image_id}",
-            on_click=_save_review,
-            args=(record, next_unreviewed_id),
-            disabled=next_unreviewed_id is None,
-            help=(
-                "No other unreviewed image matches the current queue filters."
-                if next_unreviewed_id is None
-                else "Save this review and open the next unreviewed image matching the current filters."
-            ),
-            width="stretch",
-            type="primary",
-        )
-    review_error = st.session_state.get(f"review_error_{record.image_id}")
-    if review_error:
-        st.error(review_error)
+    fields: dict[str, str] = {}
+    files: list[UploadPayload] = []
+    for part in message.iter_parts():
+        if part.get_content_disposition() != "form-data":
+            continue
+        name = part.get_param("name", header="content-disposition") or ""
+        filename = part.get_filename()
+        value = part.get_payload(decode=True) or b""
+        if filename:
+            files.append(UploadPayload(filename, value, part.get_content_type()))
+        elif name:
+            fields[name] = value.decode("utf-8", errors="replace")
+    return fields, files
 
 
-def _render_image_detail(
-    record,
-    reviews: dict[str, dict[str, object]],
-    all_records: list,
-    next_unreviewed_id: str | None,
-) -> None:
-    st.divider()
-    st.subheader("Selected Image")
-    metadata_columns = st.columns(4)
-    metadata_columns[0].metric("File type", record.file_type)
-    metadata_columns[1].metric("Width", f"{record.width} px")
-    metadata_columns[2].metric("Height", f"{record.height} px")
-    metadata_columns[3].metric("File size", format_file_size(record.size_bytes))
-    st.caption(record.display_name)
-    for note in record.metadata_notes:
-        if "fallback was used" in note:
-            st.warning(note)
-        else:
-            st.info(note)
-
-    st.markdown("#### Original Image and Model Attention")
-    if record.attention.uses_trained_encoder:
-        if record.triage.is_experimental_model:
-            st.caption(
-                "A local pretrained UNI encoder generated this exploratory feature map. "
-                "A separate experimental MHIST agreement-proxy head used the UNI embedding "
-                "for review ordering. Neither output is a diagnosis or clinical conclusion."
-            )
-        else:
-            st.caption(
-                "A local pretrained feature encoder generated this exploratory feature-variation "
-                "visualization. It is not a validated clinical attention map. The "
-                "deterministic rule supplied review priority for this image."
-            )
-    elif record.attention.is_demonstration:
-        st.caption(
-            "Deterministic demonstration attention — based on image appearance such as "
-            "contrast and edges, not learned pathology features. No trained or validated "
-            "medical model is loaded."
-        )
-    viewer_columns = st.columns(2)
-    with viewer_columns[0]:
-        st.markdown("**Original Image**")
-        render_image_viewer(
-            record.image,
-            f"original_{record.image_id}",
-            "Original image.",
-        )
-    with viewer_columns[1]:
-        st.markdown("**Attention Overlay**")
-        render_image_viewer(
-            record.attention.overlay,
-            f"attention_{record.image_id}",
-            record.attention.overlay_caption,
-        )
-    st.markdown(f"**Plain-language explanation:** {record.attention.explanation}")
-    _render_original_resolution(record)
-
-    st.markdown("#### Review Priority")
-    state = reviews[record.image_id]
-    st.markdown(
-        '<div class="pathology-priority-summary"><strong>Suggested:</strong>'
-        + _priority_pill(record.triage.suggested_priority)
-        + "</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div class="pathology-priority-summary"><strong>Current reviewer choice:</strong>'
-        + _priority_pill(str(state["priority"]))
-        + "</div>",
-        unsafe_allow_html=True,
-    )
-    st.write(record.triage.explanation)
-    st.caption(f"Priority source: {record.triage.priority_source}")
-    if record.triage.is_experimental_model:
-        st.caption("Review Priority source: Experimental local proxy head")
-        st.caption(
-            "Trained on an MHIST colorectal-polyp agreement proxy; other tissues "
-            "are out of domain. This is not disease prediction or clinical urgency."
-        )
-        st.caption(
-            "Experimental disagreement-proxy score: "
-            f"{record.triage.review_first_score:.3f}. This is not a calibrated "
-            "probability or clinical confidence."
-        )
-        st.caption(
-            "UNI supplies features; the separate experimental head generates the "
-            "review-order suggestion."
-        )
-    else:
-        st.caption("Review Priority source: Deterministic fallback")
-        if record.attention.uses_trained_encoder:
-            st.caption("The experimental priority head was not used for this label.")
-    st.caption("Human Review Required • Priority is review order only.")
-
-    _render_manual_review_action_panel(
-        record,
-        reviews,
-        all_records,
-        next_unreviewed_id,
-    )
-
-    st.markdown("#### Image Quality")
-    if record.quality.adequate:
-        st.success("Image passes the blocking MVP quality checks.")
-    else:
-        st.warning(f"{NEEDS_BETTER_IMAGE}: quality issues were found.")
-        for reason in record.quality.reasons:
-            st.write(f"• {reason}")
-    for advisory in record.quality.advisories:
-        st.warning(f"Manual quality advisory: {advisory}")
-    with st.expander("Quality check details"):
-        st.write(f"Brightness score: {record.quality.metrics['brightness']:.1f} / 255")
-        st.write(f"Contrast score: {record.quality.metrics['contrast']:.1f}")
-        st.write(f"Edge-sharpness score: {record.quality.metrics['blur_score']:.1f}")
-        st.caption(
-            "These are simple presentation-quality heuristics, not biological or "
-            "clinical measurements."
-        )
-    if not record.quality.adequate:
-        st.warning(
-            "The image-quality warning remains active even if a reviewer chooses a "
-            "different review priority."
-        )
+def _snapshot_review(record: Any, review: dict[str, Any]) -> None:
+    review.update({
+        "reviewed": True,
+        "reviewed_at_utc": datetime.now(timezone.utc).isoformat(),
+        "group_id_format_validated": bool(str(review.get("group_id", "")).strip()),
+        "suggested_priority_at_review": record.triage.suggested_priority,
+        "priority_source_at_review": record.triage.priority_source,
+        "priority_method_at_review": record.triage.priority_method,
+        "priority_fallback_reason_at_review": record.triage.fallback_reason or "",
+        "review_first_proxy_score_at_review": record.triage.review_first_score,
+        "attention_provider_at_review": record.attention.provider_name,
+        "embedding_model_at_review": record.attention.embedding_model or "",
+        "embedding_at_review": record.attention.embedding,
+    })
 
 
-def _render_review_export(
-    batch: BatchResult,
-    reviews: dict[str, dict[str, object]],
-    batch_fingerprint: str,
-    domain_context: str,
-) -> None:
-    reviewed_count = sum(
-        int(bool(reviews[record.image_id].get("reviewed", False)))
-        for record in batch.records
-    )
-    with st.expander("Export reviewed labels for research training"):
-        st.write(
-            f"Reviewed images in the current batch: **{reviewed_count}**. The CSV "
-            "contains reviewer labels and local model-embedding metadata. Fixed UNI feature "
-            "columns are included when available; other encoders export model metadata for audit. "
-            "It does not contain raw images, filenames, or local paths."
-        )
-        st.caption(
-            "Rows without a case/slide group ID can be exported for audit, but cannot be "
-            "used by the later group-safe training-preparation workflow."
-        )
-        st.warning(
-            "Do not export names, medical record numbers, dates of birth, or other "
-            "identifying information. Group-ID format checks cannot verify "
-            "de-identification. The downloaded CSV remains local and unencrypted."
-        )
-        confirmation_key = f"export_deidentified_{batch_fingerprint}"
-        confirmed = st.checkbox(
-            "I confirm that reviewer notes and any supplied group IDs contain no identifying information.",
-            key=confirmation_key,
-        )
-        try:
-            export_data = build_review_export_csv(
-                batch.records, reviews, domain_context=domain_context
-            )
-        except ValueError as exc:
-            st.error(f"The research export could not be prepared: {exc}")
-            return
-        st.download_button(
-            "Download reviewed labels and embedding metadata (CSV)",
-            data=export_data,
-            file_name=f"pathologyai_review_labels_{batch_fingerprint[:8]}.csv",
-            mime="text/csv",
-            disabled=reviewed_count == 0 or not confirmed,
-            help=(
-                "The export includes only images marked reviewed in the current batch. "
-                "It is for research/education review-priority development only."
-            ),
-        )
-        if reviewed_count == 0:
-            st.caption("Mark at least one image as reviewed before exporting.")
-        elif not confirmed:
-            st.caption("Confirm de-identification before downloading.")
+class AppHandler(BaseHTTPRequestHandler):
+    server_version = "PathologyAI/2"
 
-
-def _render_review_queue(
-    batch: BatchResult,
-    reviews: dict[str, dict[str, object]],
-    batch_fingerprint: str,
-    domain_context: str,
-) -> None:
-    ordered_records = sorted(
-        batch.records,
-        key=lambda record: _record_sort_key(record, reviews),
-    )
-    reviewed_count = sum(
-        int(bool(reviews[record.image_id].get("reviewed", False)))
-        for record in ordered_records
-    )
-    total = len(ordered_records)
-    progress_columns = st.columns(4)
-    progress_columns[0].metric("Awaiting review", total - reviewed_count)
-    progress_columns[1].metric("Reviewed", reviewed_count)
-    progress_columns[2].metric(
-        "Review complete", f"{(reviewed_count / total if total else 0):.0%}"
-    )
-    progress_columns[3].metric("Valid images", total)
-    st.progress(reviewed_count / total if total else 0.0)
-
-    with st.container(border=True):
-        st.markdown("#### Filter Queue")
-        filter_columns = st.columns(3)
-        status_filter = filter_columns[0].selectbox(
-            "Review status",
-            options=("Awaiting", "Reviewed", "All"),
-            key=f"queue_status_{batch_fingerprint}",
-        )
-        priority_filter = filter_columns[1].multiselect(
-            "Review priorities",
-            options=PRIORITIES,
-            default=list(PRIORITIES),
-            key=f"queue_priorities_{batch_fingerprint}",
-        )
-        groups = sorted(
-            {
-                str(reviews[record.image_id].get("group_id", "")).strip()
-                for record in ordered_records
-                if str(reviews[record.image_id].get("group_id", "")).strip()
-            }
-        )
-        group_options = ["All groups", "Ungrouped", *groups]
-        group_key = f"queue_group_{batch_fingerprint}"
-        if st.session_state.get(group_key) not in group_options:
-            st.session_state[group_key] = "All groups"
-        group_filter = filter_columns[2].selectbox(
-            "Case/slide group",
-            options=group_options,
-            key=group_key,
-        )
-
-    filtered_records = _filter_records(
-        ordered_records,
-        reviews,
-        status_filter,
-        priority_filter,
-        group_filter,
-    )
-    if st.session_state.pop("queue_message", None):
-        st.success("Review saved.")
-    if not filtered_records:
-        if total and reviewed_count == total:
-            st.success("Queue complete — every valid image is marked reviewed.")
-        else:
-            st.info("No images match the current queue filters.")
-        with st.expander("Per-image statistics", expanded=False):
-            _render_batch_table(batch, ordered_records, reviews)
-        _render_review_export(
-            batch, reviews, batch_fingerprint, domain_context=domain_context
-        )
+    def log_message(self, _format: str, *_args: Any) -> None:
         return
 
-    selection_options = [record.image_id for record in filtered_records]
-    if st.session_state.get("selected_image_id") not in selection_options:
-        st.session_state["selected_image_id"] = selection_options[0]
-    selection_widget_key = f"selected_image_widget_{batch_fingerprint}"
-    if st.session_state.get(selection_widget_key) != st.session_state["selected_image_id"]:
-        # Keep the dropdown separate from the canonical navigation state. This
-        # lets the buttons update the selection after the dropdown has already
-        # been rendered, then synchronize it safely on the following rerun.
-        st.session_state[selection_widget_key] = st.session_state["selected_image_id"]
-    record_by_id = {record.image_id: record for record in ordered_records}
-    selected_id = st.selectbox(
-        "Select an image for detailed review",
-        options=selection_options,
-        key=selection_widget_key,
-        format_func=lambda image_id: (
-            f"{record_by_id[image_id].display_name} — "
-            f"{reviews[image_id]['priority']}"
-            f"{' ✓' if reviews[image_id]['reviewed'] else ''}"
-        ),
-        on_change=_sync_queue_selection,
-        args=(selection_widget_key,),
-    )
-    st.session_state["selected_image_id"] = selected_id
-    selected_index = selection_options.index(selected_id)
-    navigation = st.columns((1, 1, 2, 1, 1))
-    navigation[0].button(
-        "Previous",
-        disabled=selected_index == 0,
-        key=f"previous_{batch_fingerprint}",
-        on_click=_navigate_queue,
-        args=(tuple(selection_options), -1, selection_widget_key),
-        width="stretch",
-        type="secondary",
-    )
-    navigation[1].button(
-        "Next",
-        disabled=selected_index >= len(selection_options) - 1,
-        key=f"next_{batch_fingerprint}",
-        on_click=_navigate_queue,
-        args=(tuple(selection_options), 1, selection_widget_key),
-        width="stretch",
-        type="secondary",
-    )
-    navigation[2].markdown(
-        f"<div style='text-align:center;padding-top:0.45rem'>Item "
-        f"{selected_index + 1} of {len(selection_options)}</div>",
-        unsafe_allow_html=True,
-    )
+    def _space(self) -> tuple[Workspace, str | None]:
+        cookie = SimpleCookie(self.headers.get("Cookie"))
+        session_id = cookie.get("pathology_ai_session")
+        key = session_id.value if session_id else uuid4().hex
+        with LOCK:
+            return SESSIONS.setdefault(key, Workspace()), (None if session_id else key)
 
-    visible_after_selected = (
-        filtered_records[selected_index + 1 :] + filtered_records[:selected_index]
-    )
-    next_unreviewed_id = next(
-        (
-            candidate.image_id
-            for candidate in visible_after_selected
-            if not bool(reviews[candidate.image_id].get("reviewed", False))
-        ),
-        None,
-    )
-    with st.expander("Per-image statistics", expanded=False):
-        _render_batch_table(batch, ordered_records, reviews)
-    _render_image_detail(
-        record_by_id[selected_id],
-        reviews,
-        ordered_records,
-        next_unreviewed_id,
-    )
-    _render_review_export(
-        batch, reviews, batch_fingerprint, domain_context=domain_context
-    )
+    def _send(self, status: int, data: bytes = b"", content_type: str = "application/json", session: str | None = None, download: str | None = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        if session:
+            self.send_header("Set-Cookie", f"pathology_ai_session={session}; Path=/; SameSite=Lax; HttpOnly")
+        if download:
+            self.send_header("Content-Disposition", f'attachment; filename="{download}"')
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _json(self, payload: Any, status: int = HTTPStatus.OK, session: str | None = None) -> None:
+        self._send(status, json.dumps(payload, default=list).encode(), session=session)
+
+    def _error(self, message: str, status: int = HTTPStatus.BAD_REQUEST, session: str | None = None) -> None:
+        self._json({"error": message}, status, session)
+
+    def _record(self, space: Workspace, image_id: str) -> Any:
+        if not space.batch:
+            raise KeyError("Upload images before using the review workspace.")
+        return next(record for record in space.batch.records if record.image_id == image_id)
+
+    def do_GET(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        space, session = self._space()
+        try:
+            if path == "/api/status":
+                with LOCK:
+                    self._json(_workspace_json(space), session=session)
+            elif path.startswith("/api/images/"):
+                _, _, _, image_id, kind = path.split("/", 4)
+                record = self._record(space, image_id)
+                image = {"original": record.image, "overlay": record.attention.overlay, "heatmap": record.attention.heatmap}.get(kind)
+                if image is None:
+                    raise KeyError("Unknown image view.")
+                self._send(HTTPStatus.OK, _image_bytes(image), "image/png", session)
+            elif path == "/api/export":
+                if not space.batch:
+                    raise KeyError("There is no batch to export.")
+                data = build_review_export_csv(space.batch.records, space.reviews, space.domain_context)
+                self._send(HTTPStatus.OK, data, "text/csv; charset=utf-8", session, "pathologyai_review_labels.csv")
+            else:
+                static_file = _static_file(path)
+                if static_file is None:
+                    self._error("Route not found.", HTTPStatus.NOT_FOUND, session)
+                else:
+                    self._send(
+                        HTTPStatus.OK,
+                        static_file.read_bytes(),
+                        _static_content_type(static_file),
+                        session,
+                    )
+        except (KeyError, ValueError, StopIteration) as exc:
+            self._error(str(exc), HTTPStatus.BAD_REQUEST, session)
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        space, session = self._space()
+        try:
+            if path == "/api/upload":
+                fields, files = _multipart(self)
+                if not files:
+                    raise ValueError("Choose at least one image or ZIP file.")
+                kind = fields.get("provider_kind", "deterministic")
+                if kind not in {"deterministic", "uni", "hibou"}:
+                    raise ValueError("Unsupported feature provider.")
+                provider = get_attention_provider(provider_kind=kind)
+                use_head = fields.get("use_review_model") == "true" and kind == "uni" and get_review_model_status().ready
+                space.batch = process_uploads(files, provider, get_review_model() if use_head else None)
+                space.reviews = {record.image_id: _review_defaults(record) for record in space.batch.records}
+                space.provider_kind, space.use_review_model = kind, use_head
+                space.domain_context = fields.get("domain_context", "unknown_or_other") if fields.get("domain_context") in DOMAIN_VALUES.values() else "unknown_or_other"
+                space.screening_seconds = max(0.0, min(600.0, float(fields.get("screening_seconds", DEFAULT_SCREENING_SECONDS_PER_IMAGE))))
+                self._json(_workspace_json(space), HTTPStatus.CREATED, session)
+            elif path == "/api/settings":
+                payload = self._body_json()
+                space.domain_context = payload.get("domain_context", space.domain_context) if payload.get("domain_context", space.domain_context) in DOMAIN_VALUES.values() else space.domain_context
+                space.screening_seconds = max(0.0, min(600.0, float(payload.get("screening_seconds", space.screening_seconds))))
+                self._json(_workspace_json(space), session=session)
+            elif path.startswith("/api/reviews/") and path.endswith("/reopen"):
+                record = self._record(space, path.split("/")[3])
+                review = space.reviews[record.image_id]
+                review["reviewed"], review["reviewed_at_utc"] = False, ""
+                for key in tuple(review):
+                    if key.endswith("_at_review"):
+                        review.pop(key)
+                self._json(_workspace_json(space), session=session)
+            elif path.startswith("/api/reviews/"):
+                record = self._record(space, path.split("/")[3])
+                payload, review = self._body_json(), space.reviews[record.image_id]
+                review.update({key: payload.get(key, review.get(key, "")) for key in ("priority", "notes", "group_id")})
+                validate_review_fields(record, review)
+                _snapshot_review(record, review)
+                self._json(_workspace_json(space), session=session)
+            elif path.startswith("/api/groups/"):
+                record = self._record(space, path.split("/")[3])
+                group_id = validate_optional_group_id(self._body_json().get("group_id", ""))
+                for item in space.batch.records if space.batch else []:
+                    if item.source_name == record.source_name:
+                        space.reviews[item.image_id]["group_id"] = group_id
+                self._json(_workspace_json(space), session=session)
+            elif path == "/api/reset":
+                space.batch = None
+                space.reviews.clear()
+                space.domain_context = "unknown_or_other"
+                space.screening_seconds = DEFAULT_SCREENING_SECONDS_PER_IMAGE
+                space.provider_kind = "deterministic"
+                space.use_review_model = False
+                self._json(_workspace_json(space), session=session)
+            else:
+                self._error("Route not found.", HTTPStatus.NOT_FOUND, session)
+        except (KeyError, ValueError, StopIteration, json.JSONDecodeError) as exc:
+            self._error(str(exc), HTTPStatus.BAD_REQUEST, session)
+
+    def _body_json(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0 or length > 1_000_000:
+            raise ValueError("Invalid JSON request body.")
+        value = json.loads(self.rfile.read(length))
+        if not isinstance(value, dict):
+            raise ValueError("JSON body must be an object.")
+        return value
 
 
 def main() -> None:
-    _render_app_styles()
-    st.title("🔬 PathologyAI")
-    st.caption("Research/Education Prototype • Review Priority • Human Review Required")
-    st.warning(DISCLAIMER)
-    workflow_tracker = st.empty()
-    _render_workflow_tracker(workflow_tracker, current_step=1)
-    _render_safety_limitations()
-
-    uni_status = get_uni_provider_status()
-    hibou_status = get_hibou_provider_status()
-    review_model_status = get_review_model_status()
-    with st.sidebar:
-        with st.expander("Model Settings", expanded=False):
-            provider_options = [("Deterministic demonstration", "deterministic")]
-            if uni_status.ready:
-                provider_options.append(("Local UNI feature exploration", "uni"))
-            if hibou_status.ready:
-                provider_options.append(("Local Hibou-B feature exploration (CPU)", "hibou"))
-            provider_label = st.selectbox(
-                "Feature provider",
-                options=[label for label, _value in provider_options],
-                index=0,
-                help=(
-                    "Feature providers create exploratory image embeddings and variation maps. "
-                    "They do not make pathology findings or diagnoses."
-                ),
-            )
-            provider_kind = dict(provider_options)[provider_label]
-            if provider_kind == "uni":
-                st.success(uni_status.summary)
-                st.caption("UNI exploratory feature variation is enabled.")
-            elif provider_kind == "hibou":
-                st.success(hibou_status.summary)
-                st.caption(hibou_status.detail)
-            else:
-                st.write("**Model Attention source:** Deterministic demonstration")
-            if not uni_status.ready:
-                st.caption(uni_status.detail)
-            if not hibou_status.ready:
-                st.caption(hibou_status.detail)
-
-            use_uni = provider_kind == "uni"
-            feature_provider_enabled = provider_kind != "deterministic"
-            if use_uni and review_model_status.ready:
-                st.success(review_model_status.summary)
-                use_review_model = st.toggle(
-                    "Use experimental MHIST agreement-proxy head",
-                    value=True,
-                    help=(
-                        "Uses the local quick prototype head with UNI features to suggest "
-                        "Review First or Lower Priority. Image-quality checks remain separate."
-                    ),
-                )
-            else:
-                use_review_model = False
-                if review_model_status.ready and not use_uni:
-                    st.caption(
-                        "Experimental priority head is available only with local UNI features."
-                    )
-                else:
-                    st.warning(
-                        "Experimental priority head unavailable; using deterministic "
-                        "visual-complexity fallback."
-                    )
-                    st.caption(review_model_status.detail)
-        with st.expander("Evaluation Limits", expanded=False):
-            if review_model_status.metrics:
-                metrics = review_model_status.metrics
-                st.write(
-                    "Official MHIST test split: balanced accuracy "
-                    f"{metrics.get('balanced_accuracy', 0.0):.3f}, ROC-AUC "
-                    f"{metrics.get('roc_auc', 0.0):.3f}, Review First recall "
-                    f"{metrics.get('review_first_recall', 0.0):.3f}."
-                )
-                st.caption(
-                    "These measure a dataset-specific annotator-agreement proxy, not "
-                    "clinical performance. MHIST lacks case/slide group IDs, so "
-                    "patient-level split independence could not be verified."
-                )
-        with st.expander("Scope & Limits", expanded=False):
-            if go is None:
-                st.warning("Plotly is unavailable; the basic image-viewer fallback is active.")
-            else:
-                st.success("Offline interactive viewer available")
-            st.write(
-                "Supports PNG, JPG/JPEG, TIFF, and ZIP batches. This MVP does not process "
-                "whole-slide formats, make disease predictions, or download model weights. "
-                "Optional local feature models are used only when their snapshots are present."
-            )
-
-    st.subheader("Upload Pathology Images")
-    uploaded_files = st.file_uploader(
-        "Choose one or more images or ZIP files",
-        accept_multiple_files=True,
-        type=None,
-        help=(
-            "Supported: PNG, JPG/JPEG, TIFF, and ZIP. Other, empty, corrupted, or unreadable "
-            "files will be listed with a reason."
-        ),
-    )
-    st.caption(
-        "ZIPs are inspected safely in memory. Safe nested image files are processed; folder "
-        "entries and unsafe paths are not extracted."
-    )
-
-    if not uploaded_files:
-        st.info(
-            "Upload an image or ZIP to begin. The app will check image quality, suggest "
-            "review order, and require a human reviewer to confirm the result."
+    if not INDEX_PATH.is_file():
+        raise FileNotFoundError(
+            "dist/index.html is missing. Run `npm.cmd run build` before `python app.py`."
         )
-        st.divider()
-        st.caption("PathologyAI • Research/Education Prototype • Human Review Required")
-        return
-
-    _render_workflow_tracker(workflow_tracker, current_step=2)
-
-    payload_values = tuple(
-        (uploaded.name, uploaded.getvalue(), getattr(uploaded, "type", "") or "")
-        for uploaded in uploaded_files
-    )
-    batch_fingerprint = _batch_fingerprint(payload_values)
-    st.session_state["active_batch_fingerprint"] = batch_fingerprint
-    context_columns = st.columns(2)
-    domain_label = context_columns[0].selectbox(
-        "Batch tissue context (reviewer-declared)",
-        options=tuple(DOMAIN_LABEL_TO_VALUE),
-        key=f"domain_context_{batch_fingerprint}",
-        help=(
-            "Choose MHIST-like only when the entire batch contains comparable colorectal-"
-            "polyp patches. Mixed or uncertain batches must remain Unknown or other tissue."
-        ),
-    )
-    screening_seconds = context_columns[1].number_input(
-        "Typical manual screening time per image (seconds)",
-        min_value=0.0,
-        max_value=600.0,
-        value=30.0,
-        step=5.0,
-        key=f"screening_seconds_{batch_fingerprint}",
-        help=(
-            "Used only to estimate time avoided reviewing unusable images. It does not "
-            "measure time saved by priority ranking."
-        ),
-    )
-    domain_context = DOMAIN_LABEL_TO_VALUE[domain_label]
-    with st.spinner("Checking files and preparing review-priority suggestions..."):
-        selected_provider_key = {
-            "uni": uni_status.cache_key,
-            "hibou": hibou_status.cache_key,
-            "deterministic": "deterministic-demo:v1",
-        }[provider_kind]
-        selected_review_model_key = (
-            review_model_status.cache_key
-            if use_review_model
-            else "review-head-disabled:v1"
-        )
-        batch = _process_cached(
-            payload_values,
-            selected_provider_key,
-            provider_kind,
-            selected_review_model_key,
-            use_review_model,
-        )
-
-    reviews = _initialize_review_state(batch)
-    completed_reviews = sum(
-        int(bool(reviews[record.image_id].get("reviewed", False)))
-        for record in batch.records
-    )
-    _render_workflow_tracker(
-        workflow_tracker,
-        current_step=(
-            4
-            if batch.records and completed_reviews == len(batch.records)
-            else 3
-        ),
-    )
-    review_tab, operations_tab, evaluation_tab = st.tabs(
-        ["Review Queue", "Operational Dashboard", "Model Evaluation & Limits"]
-    )
-    with review_tab:
-        if not batch.records:
-            st.error(
-                "No valid images were available for review. Check the skipped-file reasons "
-                "and upload a supported, readable image."
-            )
-            _render_skipped_files(batch)
-        else:
-            _render_review_queue(
-                batch,
-                reviews,
-                batch_fingerprint,
-                domain_context=domain_context,
-            )
-    with operations_tab:
-        _render_operational_dashboard(
-            batch,
-            reviews,
-            domain_label=domain_label,
-            screening_seconds=screening_seconds,
-            feature_provider_enabled=feature_provider_enabled,
-            use_review_model=use_review_model,
-        )
-    with evaluation_tab:
-        _render_model_evaluation(review_model_status)
-
-    st.divider()
-    st.caption("PathologyAI • Research/Education Prototype • Human Review Required")
+    server = ThreadingHTTPServer((HOST, PORT), AppHandler)
+    url = f"http://{HOST}:{PORT}"
+    print(f"PathologyAI is running at {url}")
+    Timer(0.35, lambda: webbrowser.open(url)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

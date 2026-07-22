@@ -1,0 +1,158 @@
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import type {
+  DomainContext,
+  ProviderKind,
+  Providers,
+  WorkspaceSettings,
+} from "../types";
+
+const DEFAULT_SETTINGS: WorkspaceSettings = {
+  provider_kind: "deterministic",
+  use_review_model: false,
+  domain_context: "unknown_or_other",
+  screening_seconds: 30,
+};
+
+export interface UploadValues {
+  files: File[];
+  providerKind: ProviderKind;
+  useReviewModel: boolean;
+  domainContext: DomainContext;
+  screeningSeconds: number;
+}
+
+export function UploadSettingsForm({
+  providers,
+  settings,
+  busy,
+  onSubmit,
+}: {
+  providers: Providers;
+  settings?: WorkspaceSettings;
+  busy: boolean;
+  onSubmit: (values: UploadValues) => Promise<void>;
+}) {
+  const active = settings ?? DEFAULT_SETTINGS;
+  const [providerKind, setProviderKind] = useState<ProviderKind>(active.provider_kind);
+  const [domainContext, setDomainContext] = useState<DomainContext>(active.domain_context);
+  const [screeningSeconds, setScreeningSeconds] = useState(active.screening_seconds);
+  const [useReviewModel, setUseReviewModel] = useState(active.use_review_model);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const next = settings ?? DEFAULT_SETTINGS;
+    setProviderKind(next.provider_kind);
+    setDomainContext(next.domain_context);
+    setScreeningSeconds(next.screening_seconds);
+    setUseReviewModel(next.use_review_model);
+    if (fileInput.current) fileInput.current.value = "";
+  }, [settings]);
+
+  const providerHelp = useMemo(() => {
+    if (providerKind === "uni") return providers.uni;
+    if (providerKind === "hibou") return providers.hibou;
+    return null;
+  }, [providerKind, providers]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const files = Array.from(fileInput.current?.files ?? []);
+    if (!files.length) return;
+    await onSubmit({ files, providerKind, useReviewModel, domainContext, screeningSeconds });
+  }
+
+  return (
+    <form className="upload panel" onSubmit={submit}>
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Batch intake</p>
+          <h2>Upload pathology images</h2>
+        </div>
+        <span className="format-note">PNG · JPG · TIFF · ZIP</span>
+      </div>
+      <p className="muted">
+        ZIP contents are checked in memory; unsafe or unreadable entries are reported individually.
+      </p>
+      <label htmlFor="upload-files">Choose one or more files</label>
+      <input
+        id="upload-files"
+        ref={fileInput}
+        required
+        multiple
+        name="files"
+        type="file"
+        accept=".png,.jpg,.jpeg,.tif,.tiff,.zip,image/png,image/jpeg,image/tiff,application/zip"
+      />
+      <div className="settings">
+        <div>
+          <label htmlFor="provider-kind">Feature provider</label>
+          <select
+            id="provider-kind"
+            name="provider_kind"
+            value={providerKind}
+            onChange={(event) => setProviderKind(event.target.value as ProviderKind)}
+          >
+            <option value="deterministic">Deterministic demonstration</option>
+            <option value="uni" disabled={!providers.uni.ready}>
+              Local UNI feature exploration{providers.uni.ready ? "" : " (unavailable)"}
+            </option>
+            <option value="hibou" disabled={!providers.hibou.ready}>
+              Local Hibou-B feature exploration{providers.hibou.ready ? "" : " (unavailable)"}
+            </option>
+          </select>
+          {providerHelp && (
+            <div className="field-help" aria-live="polite">
+              <strong>{providerHelp.summary}</strong>
+              <span>{providerHelp.detail}</span>
+            </div>
+          )}
+        </div>
+        <div>
+          <label htmlFor="domain-context">Batch tissue context</label>
+          <select
+            id="domain-context"
+            name="domain_context"
+            value={domainContext}
+            onChange={(event) => setDomainContext(event.target.value as DomainContext)}
+          >
+            <option value="unknown_or_other">Unknown or other tissue</option>
+            <option value="mhist_like_colorectal_polyp">MHIST-like colorectal-polyp patches</option>
+          </select>
+          <label htmlFor="screening-seconds">Manual screening seconds/image</label>
+          <input
+            id="screening-seconds"
+            name="screening_seconds"
+            type="number"
+            min="0"
+            max="600"
+            step="5"
+            value={screeningSeconds}
+            onChange={(event) => setScreeningSeconds(Number(event.target.value))}
+          />
+        </div>
+        <div className="model-option">
+          <label className="check" htmlFor="use-review-model">
+            <input
+              id="use-review-model"
+              name="use_review_model"
+              type="checkbox"
+              disabled={!providers.review_model.ready}
+              checked={useReviewModel}
+              onChange={(event) => setUseReviewModel(event.target.checked)}
+            />
+            <span>Use experimental MHIST agreement-proxy head</span>
+          </label>
+          <div className="field-help">
+            <strong>{providers.review_model.summary}</strong>
+            <span>{providers.review_model.detail}</span>
+          </div>
+        </div>
+      </div>
+      <div className="actions">
+        <button className="primary" disabled={busy} type="submit">
+          {busy ? "Processing files…" : "Process files"}
+        </button>
+      </div>
+    </form>
+  );
+}

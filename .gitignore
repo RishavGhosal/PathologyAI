@@ -14,6 +14,10 @@ venv/
 env/
 ENV/
 
+# Frontend dependencies (production dist/ remains a tracked deliverable)
+node_modules/
+*.tsbuildinfo
+
 # Local configuration and secrets
 .env
 .env.*

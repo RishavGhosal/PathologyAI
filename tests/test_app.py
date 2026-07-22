@@ -1,511 +1,206 @@
-"""Streamlit UI smoke tests using only the installed Streamlit test API."""
+"""HTTP tests for the PathologyAI API and Vite production frontend."""
 
 from __future__ import annotations
 
+from http.cookiejar import CookieJar
+from http.server import ThreadingHTTPServer
 from io import BytesIO
 import json
 from pathlib import Path
+import re
+from threading import Thread
 import unittest
-import zipfile
+from urllib.error import HTTPError
+from urllib.request import HTTPCookieProcessor, Request, build_opener
+from zipfile import ZipFile
 
 from PIL import Image, ImageDraw
-from streamlit.testing.v1 import AppTest
 
-from app import THEME_DARK_BACKGROUND, UI_PALETTE
-from pathology_ai.pipeline import _stable_image_id
-from pathology_ai.review_model import get_review_model_status
-from pathology_ai.triage import LOWER_PRIORITY, REVIEW_FIRST
+from app import AppHandler, SESSIONS
 
 
-APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
-EXPECTED_DISCLAIMER = (
-    "This research and education prototype provides review-priority suggestions only. "
-    "It does not provide a medical diagnosis and does not replace review by a qualified "
-    "pathologist."
-)
-
-
-def _image_bytes(size: tuple[int, int] = (256, 256), image_format: str = "PNG") -> bytes:
-    image = Image.new("RGB", size, (224, 184, 205))
-    draw = ImageDraw.Draw(image)
-    tile = max(4, min(size) // 16)
-    for y in range(0, size[1], tile):
-        for x in range(0, size[0], tile):
-            if ((x // tile) + (y // tile)) % 2:
-                draw.rectangle(
-                    (x, y, min(x + tile - 1, size[0] - 1), min(y + tile - 1, size[1] - 1)),
-                    fill=(92, 42, 118),
-                )
+def _image_bytes() -> bytes:
+    image = Image.new("RGB", (256, 256), (224, 184, 205))
+    drawing = ImageDraw.Draw(image)
+    for x in range(0, 256, 16):
+        drawing.line((x, 0, 255 - x, 255), fill=(92, 42, 118), width=5)
     output = BytesIO()
-    image.save(output, format=image_format)
+    image.save(output, format="PNG")
     return output.getvalue()
 
 
-def _zip_bytes(entries: dict[str, bytes]) -> bytes:
+def _multipart(
+    files: tuple[tuple[str, bytes, str], ...] | None = None,
+) -> tuple[bytes, str]:
+    boundary = "PathologyAIBoundary"
+    files = files or (("sample.png", _image_bytes(), "image/png"),)
+    lines = [
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"provider_kind\"\r\n\r\ndeterministic\r\n".encode(),
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"use_review_model\"\r\n\r\nfalse\r\n".encode(),
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"domain_context\"\r\n\r\nunknown_or_other\r\n".encode(),
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"screening_seconds\"\r\n\r\n30\r\n".encode(),
+    ]
+    for filename, content, content_type in files:
+        lines.extend(
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n".encode(),
+                content,
+                b"\r\n",
+            )
+        )
+    lines.append(f"--{boundary}--\r\n".encode())
+    return b"".join(lines), boundary
+
+
+def _zip_bytes() -> bytes:
     output = BytesIO()
-    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, data in entries.items():
-            archive.writestr(name, data)
+    with ZipFile(output, "w") as archive:
+        archive.writestr("one.png", _image_bytes())
+        archive.writestr("two.png", _image_bytes())
     return output.getvalue()
 
 
-def _metrics(app: AppTest) -> dict[str, str]:
-    return {metric.label: metric.value for metric in app.metric}
+class StandaloneAppTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        SESSIONS.clear()
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), AppHandler)
+        cls.thread = Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.url = f"http://127.0.0.1:{cls.server.server_port}"
 
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
 
-def _element_with_label(elements, label: str):
-    return next(element for element in elements if element.label == label)
+    def setUp(self) -> None:
+        SESSIONS.clear()
+        self.cookie_jar = CookieJar()
+        self.opener = build_opener(HTTPCookieProcessor(self.cookie_jar))
 
+    def request_json(self, path: str, payload: dict | None = None) -> dict:
+        body = None if payload is None else json.dumps(payload).encode()
+        request = Request(self.url + path, data=body, method="POST" if body else "GET")
+        if body:
+            request.add_header("Content-Type", "application/json")
+        with self.opener.open(request) as response:
+            return json.loads(response.read())
 
-def _dataframe_with_column(app: AppTest, column: str):
-    return next(frame.value for frame in app.dataframe if column in frame.value.columns)
+    def test_vite_index_assets_and_session_cookie(self) -> None:
+        with self.opener.open(self.url + "/") as response:
+            page = response.read().decode()
+            self.assertEqual(response.headers.get_content_type(), "text/html")
+            self.assertIn("pathology_ai_session=", response.headers["Set-Cookie"])
+        self.assertIn('id="root"', page)
+        with self.opener.open(self.url + "/index.html") as response:
+            self.assertEqual(response.headers.get_content_type(), "text/html")
+            self.assertEqual(response.read().decode(), page)
 
+        asset_paths = re.findall(r'(?:src|href)="(/assets/[^"]+)"', page)
+        script_paths = [path for path in asset_paths if path.endswith(".js")]
+        style_paths = [path for path in asset_paths if path.endswith(".css")]
+        self.assertTrue(script_paths, "The Vite index must reference a built JavaScript asset.")
+        self.assertTrue(style_paths, "The Vite index must reference a built CSS asset.")
+        for path in script_paths + style_paths:
+            self.assertRegex(path, r"^/assets/.+-[A-Za-z0-9_-]+\.(?:js|css)$")
+            with self.opener.open(self.url + path) as response:
+                expected = "text/javascript" if path.endswith(".js") else "text/css"
+                self.assertEqual(response.headers.get_content_type(), expected)
+                self.assertGreater(len(response.read()), 0)
+                self.assertIsNone(response.headers.get("Set-Cookie"))
 
-def _relative_luminance(hex_color: str) -> float:
-    color = hex_color.lstrip("#")
-    channels = tuple(int(color[index : index + 2], 16) / 255 for index in (0, 2, 4))
-    linear_channels = tuple(
-        channel / 12.92
-        if channel <= 0.04045
-        else ((channel + 0.055) / 1.055) ** 2.4
-        for channel in channels
-    )
-    return (
-        0.2126 * linear_channels[0]
-        + 0.7152 * linear_channels[1]
-        + 0.0722 * linear_channels[2]
-    )
+        request = Request(self.url + "/api/status")
+        with self.opener.open(request) as response:
+            status = json.loads(response.read())
+            self.assertIsNone(response.headers.get("Set-Cookie"))
+        self.assertIsNone(status["batch"])
+        self.assertIn("does not provide a medical diagnosis", status["disclaimer"])
+        self.assertEqual(len(self.cookie_jar), 1)
 
-
-def _contrast_ratio(first: str, second: str) -> float:
-    first_luminance = _relative_luminance(first)
-    second_luminance = _relative_luminance(second)
-    lighter, darker = sorted((first_luminance, second_luminance), reverse=True)
-    return (lighter + 0.05) / (darker + 0.05)
-
-
-class PaletteContrastTests(unittest.TestCase):
-    def test_filled_palette_colors_meet_aa_against_dark_theme(self) -> None:
-        self.assertEqual(UI_PALETTE["accent"], "#00C0F2")
-        self.assertEqual(UI_PALETTE["priority_high"], "#FF4B4B")
-        self.assertEqual(UI_PALETTE["priority_medium"], "#FACA2B")
-        self.assertEqual(UI_PALETTE["priority_low"], "#619C74")
-        for color_name, color in UI_PALETTE.items():
-            with self.subTest(color_name=color_name):
-                self.assertGreaterEqual(_contrast_ratio(color, THEME_DARK_BACKGROUND), 4.5)
-
-    def test_priority_multiselect_has_one_rule_per_severity(self) -> None:
-        source = APP_PATH.read_text(encoding="utf-8")
-        for priority in ("Review First", "Needs Better Image", "Lower Priority"):
-            with self.subTest(priority=priority):
-                self.assertIn(
-                    f'[data-testid="stMultiSelect"] [role="button"][aria-label^="{priority},"]',
-                    source,
-                )
-
-
-class StreamlitAppSmokeTests(unittest.TestCase):
-    def test_app_starts_with_visible_safety_language(self) -> None:
-        app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
-
-        self.assertEqual(len(app.exception), 0)
-        self.assertEqual(len(app.file_uploader), 1)
-        self.assertTrue(any(item.value == EXPECTED_DISCLAIMER for item in app.warning))
-        self.assertTrue(any("Research/Education Prototype" in item.value for item in app.caption))
-        self.assertTrue(
-            {"Model Settings", "Evaluation Limits", "Scope & Limits"}.issubset(
-                {item.label for item in app.expander}
+    def test_missing_and_traversal_static_paths_are_rejected(self) -> None:
+        for path in (
+            "/assets/does-not-exist.js",
+            "/%2e%2e/app.py",
+            "/assets/%2e%2e/index.html",
+            "/assets%5c..%5cindex.html",
+        ):
+            with self.subTest(path=path), self.assertRaises(HTTPError) as raised:
+                self.opener.open(self.url + path)
+            self.assertEqual(raised.exception.code, 404)
+            self.assertEqual(
+                json.loads(raised.exception.read()),
+                {"error": "Route not found."},
             )
-        )
-        self.assertTrue(
-            any(
-                "1. Upload" in item.value
-                and "2. Set Priorities" in item.value
-                and "3. Review Images" in item.value
-                and "4. Confirm Decision" in item.value
-                for item in app.markdown
-            )
-        )
-        status_messages = [
-            item.value for group in (app.success, app.warning, app.caption) for item in group
-        ]
-        self.assertTrue(
-            any("Experimental priority head" in message for message in status_messages)
-        )
 
-    def test_mixed_upload_and_no_supported_zip_render_without_errors(self) -> None:
-        valid_png = _image_bytes()
-        small_png = _image_bytes((64, 64))
-        mixed_zip = _zip_bytes(
-            {
-                "nested/valid.png": valid_png,
-                "broken.jpg": b"not an image",
-                "notes.txt": b"unsupported",
-            }
+    def test_upload_review_images_and_export(self) -> None:
+        body, boundary = _multipart()
+        request = Request(self.url + "/api/upload", data=body, method="POST")
+        request.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        with self.opener.open(request) as response:
+            created = json.loads(response.read())
+        record = created["batch"]["records"][0]
+        self.assertEqual(record["name"], "sample.png")
+        self.assertEqual(record["attention"]["provider_name"], "Deterministic demonstration attention")
+        for kind in ("original", "overlay", "heatmap"):
+            with self.opener.open(self.url + record["images"][kind]) as response:
+                self.assertEqual(response.headers["Content-Type"], "image/png")
+                self.assertTrue(response.read().startswith(b"\x89PNG"))
+
+        settings = self.request_json(
+            "/api/settings",
+            {"domain_context": "mhist_like_colorectal_polyp", "screening_seconds": 45},
         )
-        app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
-        if app.toggle:
-            app.toggle[0].set_value(False)
-        app.file_uploader[0].set_value(
-            [
-                ("valid.png", valid_png, "image/png"),
-                ("small.png", small_png, "image/png"),
-                ("unsupported.txt", b"hello", "text/plain"),
-                ("corrupt.jpg", b"not an image", "image/jpeg"),
-                ("mixed.zip", mixed_zip, "application/zip"),
-            ]
+        self.assertEqual(settings["settings"]["domain_context"], "mhist_like_colorectal_polyp")
+        self.assertEqual(settings["settings"]["screening_seconds"], 45)
+
+        reviewed = self.request_json(
+            f"/api/reviews/{record['id']}",
+            {"priority": record["triage"]["suggested_priority"], "notes": "Looks ready", "group_id": "batch_01"},
         )
-        app.run()
+        self.assertEqual(reviewed["batch"]["metrics"]["reviewed_count"], 1)
+        self.assertTrue(reviewed["batch"]["records"][0]["review"]["reviewed"])
 
-        values = _metrics(app)
-        self.assertEqual(len(app.exception), 0)
-        self.assertEqual(
-            [tab.label for tab in app.tabs],
-            ["Review Queue", "Operational Dashboard", "Model Evaluation & Limits"],
+        reopened = self.request_json(f"/api/reviews/{record['id']}/reopen", {})
+        self.assertFalse(reopened["batch"]["records"][0]["review"]["reviewed"])
+        self.assertEqual(reopened["batch"]["metrics"]["reviewed_count"], 0)
+        reviewed = self.request_json(
+            f"/api/reviews/{record['id']}",
+            {"priority": record["triage"]["suggested_priority"], "notes": "Looks ready", "group_id": "batch_01"},
         )
-        self.assertEqual(values["Total files uploaded"], "5")
-        self.assertEqual(values["Valid images"], "3")
-        self.assertEqual(values["Corrupted or skipped files"], "4")
-        self.assertEqual(values["Model embedding successes"], "0")
-        self.assertEqual(values["Model embedding failures"], "0")
-        self.assertEqual(values["Model embedding not attempted"], "3")
-        self.assertEqual(values["Unknown or other tissue"], "3")
-        self.assertTrue(any("Filter Queue" in item.value for item in app.markdown))
+        grouped = self.request_json(f"/api/groups/{record['id']}", {"group_id": "case_02"})
+        self.assertEqual(grouped["batch"]["records"][0]["review"]["group_id"], "case_02")
 
-        unsupported_zip = _zip_bytes(
-            {"readme.txt": b"none", "table.csv": b"a,b\n1,2"}
+        with self.opener.open(self.url + "/api/export") as response:
+            csv = response.read().decode()
+            self.assertEqual(response.headers.get_content_type(), "text/csv")
+            self.assertIn("pathologyai_review_labels.csv", response.headers["Content-Disposition"])
+        self.assertIn("reviewer_notes", csv)
+        self.assertIn("Looks ready", csv)
+
+        reset = self.request_json("/api/reset", {})
+        self.assertIsNone(reset["batch"])
+
+    def test_group_applies_to_every_record_from_same_upload_source(self) -> None:
+        body, boundary = _multipart(
+            (("batch.zip", _zip_bytes(), "application/zip"),)
         )
-        empty_app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
-        if empty_app.toggle:
-            empty_app.toggle[0].set_value(False)
-        empty_app.file_uploader[0].set_value(
-            [("no-images.zip", unsupported_zip, "application/zip")]
-        )
-        empty_app.run()
-        empty_values = _metrics(empty_app)
-        self.assertEqual(len(empty_app.exception), 0)
-        self.assertEqual(empty_values["Valid images"], "0")
-        self.assertEqual(empty_values["Corrupted or skipped files"], "2")
-        self.assertEqual(len(empty_app.error), 1)
+        request = Request(self.url + "/api/upload", data=body, method="POST")
+        request.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        with self.opener.open(request) as response:
+            created = json.loads(response.read())
 
-    def test_viewer_configuration_and_manual_review_state(self) -> None:
-        valid_png = _image_bytes()
-        app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
-        if app.toggle:
-            app.toggle[0].set_value(False)
-        app.file_uploader[0].set_value([("valid.png", valid_png, "image/png")])
-        app.run()
-
-        charts = app.get("plotly_chart")
-        self.assertGreaterEqual(len(charts), 2)
-        config = json.loads(charts[0].proto.config)
-        figure_spec = json.loads(charts[0].proto.spec)
-        self.assertTrue(config["displayModeBar"])
-        self.assertTrue(config["scrollZoom"])
-        self.assertEqual(figure_spec["layout"]["dragmode"], "pan")
-
-        _element_with_label(app.selectbox, "Review status").set_value("All")
-        _element_with_label(
-            app.text_area, "Reviewer notes (kept in this browser session)"
-        ).input("student review note")
-        _element_with_label(
-            app.text_input,
-            "De-identified case/slide group ID (optional)",
-        ).input("slide-group-001")
-        _element_with_label(
-            app.selectbox, "Confirm or override the suggested priority"
-        ).set_value("Lower Priority")
-        _element_with_label(app.button, "Save review").click()
-        app.run()
-
-        values = _metrics(app)
-        self.assertEqual(len(app.exception), 0)
-        self.assertEqual(values["Reviewed images"], "1")
-        self.assertEqual(values["Lower Priority"], "1")
-        self.assertEqual(
-            _element_with_label(
-                app.text_area, "Reviewer notes (kept in this browser session)"
-            ).value,
-            "student review note",
+        records = created["batch"]["records"]
+        self.assertEqual(len(records), 2)
+        self.assertEqual({record["source_name"] for record in records}, {"batch.zip"})
+        grouped = self.request_json(
+            f"/api/groups/{records[0]['id']}", {"group_id": "case_02"}
         )
         self.assertEqual(
-            _element_with_label(
-                app.text_input,
-                "De-identified case/slide group ID (optional)",
-            ).value,
-            "slide-group-001",
-        )
-        self.assertEqual(
-            _element_with_label(
-                app.selectbox, "Confirm or override the suggested priority"
-            ).value,
-            "Lower Priority",
-        )
-        self.assertTrue(any("Reviewed for this Streamlit session" in x.value for x in app.success))
-        per_image = _dataframe_with_column(app, "Effective reviewer priority")
-        self.assertEqual(
-            list(per_image.columns),
-            [
-                "Filename",
-                "File type",
-                "Dimensions",
-                "File size",
-                "Image Quality",
-                "Attention source",
-                "Priority source",
-                "Suggested priority",
-                "Effective reviewer priority",
-                "Queue sort key",
-                "Experimental agreement-proxy score",
-                "Quality flags/codes",
-                "Review status",
-                "Case/slide group ID",
-                "Override status",
-            ],
-        )
-        self.assertEqual(per_image.iloc[0]["Review status"], "Reviewed")
-        self.assertEqual(per_image.iloc[0]["Case/slide group ID"], "slide-group-001")
-
-    def test_review_without_group_id_remains_exportable(self) -> None:
-        valid_png = _image_bytes()
-        app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
-        if app.toggle:
-            app.toggle[0].set_value(False)
-        app.file_uploader[0].set_value([("valid.png", valid_png, "image/png")])
-        app.run()
-
-        _element_with_label(app.button, "Save review").click()
-        app.run()
-
-        self.assertEqual(len(app.error), 0)
-        self.assertEqual(_metrics(app)["Reviewed images"], "1")
-
-    def test_review_override_requires_notes(self) -> None:
-        valid_png = _image_bytes()
-        app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
-        if app.toggle:
-            app.toggle[0].set_value(False)
-        app.file_uploader[0].set_value([("valid.png", valid_png, "image/png")])
-        app.run()
-
-        priority = _element_with_label(
-            app.selectbox, "Confirm or override the suggested priority"
-        )
-        override = LOWER_PRIORITY if priority.value == REVIEW_FIRST else REVIEW_FIRST
-        _element_with_label(
-            app.text_input,
-            "De-identified case/slide group ID (optional)",
-        ).input("slide-group-001")
-        priority.set_value(override)
-        _element_with_label(app.button, "Save review").click()
-        app.run()
-
-        self.assertTrue(
-            any("notes are required" in item.value for item in app.error)
-        )
-        self.assertEqual(_metrics(app)["Reviewed images"], "0")
-
-    def test_bulk_grouping_fills_only_blanks_from_same_uploaded_source(self) -> None:
-        valid_png = _image_bytes()
-        batch_zip = _zip_bytes({"one.png": valid_png, "two.png": valid_png})
-        app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
-        if app.toggle:
-            app.toggle[0].set_value(False)
-        app.file_uploader[0].set_value(
-            [
-                ("batch.zip", batch_zip, "application/zip"),
-                ("outside.png", valid_png, "image/png"),
-            ]
-        )
-        app.run()
-
-        one_id = _stable_image_id("batch.zip", "one.png", valid_png)
-        two_id = _stable_image_id("batch.zip", "two.png", valid_png)
-        outside_id = _stable_image_id("outside.png", "outside.png", valid_png)
-        reviews = dict(app.session_state.filtered_state["reviews"])
-        reviews[two_id] = dict(reviews[two_id])
-        reviews[two_id]["group_id"] = "existing-group"
-        app.session_state["reviews"] = reviews
-        app.session_state[f"group_{two_id}"] = "existing-group"
-        app.run()
-
-        _element_with_label(
-            app.selectbox, "Select an image for detailed review"
-        ).set_value(one_id)
-        app.run()
-        _element_with_label(
-            app.text_input,
-            "De-identified case/slide group ID (optional)",
-        ).input("new-group")
-        _element_with_label(
-            app.button,
-            "Apply this ID to ungrouped images from the same uploaded source",
-        ).click()
-        app.run()
-
-        reviews = app.session_state.filtered_state["reviews"]
-        self.assertEqual(reviews[one_id]["group_id"], "new-group")
-        self.assertEqual(reviews[two_id]["group_id"], "existing-group")
-        self.assertEqual(reviews[outside_id]["group_id"], "")
-
-    def test_save_next_only_targets_images_matching_current_filters(self) -> None:
-        valid_png = _image_bytes()
-        small_png = _image_bytes((64, 64))
-        app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
-        if app.toggle:
-            app.toggle[0].set_value(False)
-        app.file_uploader[0].set_value(
-            [
-                ("valid.png", valid_png, "image/png"),
-                ("small.png", small_png, "image/png"),
-            ]
-        )
-        app.run()
-
-        selected_priority = _element_with_label(
-            app.selectbox, "Confirm or override the suggested priority"
-        ).value
-        _element_with_label(app.selectbox, "Review status").set_value("All")
-        _element_with_label(app.multiselect, "Review priorities").set_value(
-            [selected_priority]
-        )
-        app.run()
-
-        save_next = _element_with_label(app.button, "Save & next unreviewed")
-        self.assertTrue(save_next.disabled)
-        self.assertIn("current queue filters", save_next.help)
-
-    def test_previous_and_next_navigation_stay_bounded_with_stale_events(self) -> None:
-        valid_png = _image_bytes()
-        names = ("01.png", "02.png", "03.png")
-        image_ids = tuple(
-            _stable_image_id(name, name, valid_png) for name in names
-        )
-        app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
-        if app.toggle:
-            app.toggle[0].set_value(False)
-        app.file_uploader[0].set_value(
-            [(name, valid_png, "image/png") for name in names]
-        )
-        app.run()
-
-        selector = _element_with_label(
-            app.selectbox, "Select an image for detailed review"
-        )
-        self.assertEqual(selector.value, image_ids[0])
-
-        # Simulate a queued Next event whose button was rendered before the
-        # selection reached the upper boundary.  It must read current state at
-        # callback time rather than applying a stale precomputed neighbor.
-        stale_next = _element_with_label(app.button, "Next")
-        app.session_state["selected_image_id"] = image_ids[2]
-        stale_next.click()
-        app.run()
-        selector = _element_with_label(
-            app.selectbox, "Select an image for detailed review"
-        )
-        self.assertEqual(selector.value, image_ids[2])
-        self.assertTrue(_element_with_label(app.button, "Next").disabled)
-
-        # The symmetric stale Previous event must remain at the lower boundary.
-        stale_previous = _element_with_label(app.button, "Previous")
-        app.session_state["selected_image_id"] = image_ids[0]
-        stale_previous.click()
-        app.run()
-        selector = _element_with_label(
-            app.selectbox, "Select an image for detailed review"
-        )
-        self.assertEqual(selector.value, image_ids[0])
-        self.assertTrue(_element_with_label(app.button, "Previous").disabled)
-
-        # Normal navigation remains reversible after visiting either boundary.
-        _element_with_label(app.button, "Next").click()
-        app.run()
-        self.assertEqual(
-            _element_with_label(
-                app.selectbox, "Select an image for detailed review"
-            ).value,
-            image_ids[1],
-        )
-        _element_with_label(app.button, "Next").click()
-        app.run()
-        self.assertEqual(
-            _element_with_label(
-                app.selectbox, "Select an image for detailed review"
-            ).value,
-            image_ids[2],
-        )
-        _element_with_label(app.button, "Previous").click()
-        app.run()
-        self.assertEqual(
-            _element_with_label(
-                app.selectbox, "Select an image for detailed review"
-            ).value,
-            image_ids[1],
-        )
-        _element_with_label(app.button, "Next").click()
-        app.run()
-        self.assertEqual(
-            _element_with_label(
-                app.selectbox, "Select an image for detailed review"
-            ).value,
-            image_ids[2],
-        )
-        self.assertEqual(len(app.exception), 0)
-
-    def test_local_evaluation_dashboard_threshold_and_confusion_orientation(self) -> None:
-        model_status = get_review_model_status()
-        if not model_status.ready or not model_status.evaluation_valid:
-            self.skipTest("Local validated review-head evaluation artifact is unavailable")
-
-        valid_png = _image_bytes()
-        app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
-        if app.toggle:
-            app.toggle[0].set_value(False)
-        app.file_uploader[0].set_value([("valid.png", valid_png, "image/png")])
-        app.run()
-
-        metrics = _metrics(app)
-        overall = model_status.evaluation_report["overall_test_metrics"]
-        self.assertEqual(
-            metrics["Classification threshold used"],
-            f"{model_status.decision_threshold:.3f}",
-        )
-        self.assertEqual(metrics["Held-out test images"], str(overall["sample_count"]))
-        self.assertEqual(
-            metrics["Balanced accuracy"], f"{overall['balanced_accuracy']:.3f}"
+            [record["review"]["group_id"] for record in grouped["batch"]["records"]],
+            ["case_02", "case_02"],
         )
 
-        heatmaps = []
-        chart_axis_titles = []
-        for chart in app.get("plotly_chart"):
-            spec = json.loads(chart.proto.spec)
-            chart_axis_titles.append(
-                str(
-                    spec.get("layout", {})
-                    .get("xaxis", {})
-                    .get("title", {})
-                    .get("text", "")
-                )
-            )
-            if spec.get("data", [{}])[0].get("type") == "heatmap":
-                heatmaps.append(spec)
-        self.assertEqual(len(heatmaps), 1)
-        heatmap = heatmaps[0]["data"][0]
-        matrix = overall["confusion_matrix"]
-        self.assertEqual(heatmap["z"], matrix["values"])
-        self.assertEqual(
-            heatmap["x"],
-            [f"Actual {label}" for label in matrix["column_labels"]],
-        )
-        self.assertEqual(
-            heatmap["y"],
-            [f"Predicted {label}" for label in matrix["row_labels"]],
-        )
-        if "roc_curve" in overall:
-            self.assertIn("False-positive rate", chart_axis_titles)
-            self.assertIn("Recall", chart_axis_titles)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_source_file_has_no_streamlit_dependency(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "app.py"
+        self.assertNotIn("import streamlit", source.read_text(encoding="utf-8"))

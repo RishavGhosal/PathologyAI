@@ -25,19 +25,37 @@ review-priority choices, not diagnoses.
 
 ## Run the app
 
-The existing `venv` already contains the packages used by this MVP. From
+Install the frontend dependencies and create the production build from
 PowerShell in the project folder:
 
 ```powershell
-.\venv\Scripts\Activate.ps1
-python -m streamlit run app.py
+npm.cmd ci
+npm.cmd run build
 ```
+
+Then start the Python server:
+
+```powershell
+.\venv\Scripts\Activate.ps1
+python app.py
+```
+
+This automatically opens the built React frontend at `http://127.0.0.1:8501`.
+`app.py` serves `dist/index.html` and its hashed assets alongside the local HTTP
+API, which calls the existing `pathology_ai` processing, triage,
+dashboard-metric, and export utilities. No `templates/` directory or Streamlit
+server is used. Press `Ctrl+C` in the PowerShell window to stop the server.
 
 Activation is optional; the equivalent explicit command is:
 
 ```powershell
-.\venv\Scripts\python.exe -m streamlit run app.py
+.\venv\Scripts\python.exe app.py
 ```
+
+The app binds to `127.0.0.1:8501` by default. Set `PATHOLOGYAI_PORT` before
+launching if that local port is already in use. Run `npm.cmd run build` again
+after changing the React frontend; the generated `dist/` directory is retained
+so ordinary launches only require `python app.py`.
 
 Only if the environment must be recreated, install the small runtime dependency
 set with:
@@ -60,7 +78,8 @@ UNI is optional. Install the CPU inference packages with:
 
 Place the gated checkpoint at `models/uni/pytorch_model.bin`. The checkpoint is
 ignored by Git and must not be redistributed. When the checkpoint and optional
-packages are ready, select **Local UNI feature exploration** in the sidebar.
+packages are ready, select **Local UNI feature exploration** in the upload
+settings form.
 The first analysis loads the approximately 1.2 GB ViT-L checkpoint and may be
 slow or use substantial memory on CPU. Select the deterministic option for the
 faster fallback. Systems with a supported NVIDIA
@@ -69,7 +88,7 @@ instead of the CPU pins in `requirements-uni.txt`.
 
 If the local quick prototype head also exists under
 `models/review_priority_head/` and `requirements-training.txt` is installed, a
-second sidebar toggle enables its MHIST annotator-agreement proxy. The head
+the adjacent model checkbox enables its MHIST annotator-agreement proxy. The head
 requires UNI and automatically falls back to the deterministic rule if it is
 missing, disabled, incompatible, or fails on an image.
 
@@ -92,7 +111,7 @@ download model weights or remote code during normal use.
 ## Publish safely to GitHub
 
 The repository includes a `.gitignore` that excludes the virtual environment,
-Python caches, Streamlit secrets, environment files, uploaded data, and model
+Python caches, environment files, uploaded data, and model
 weights. UNI weights and Hugging Face access tokens must never be committed or
 redistributed.
 
@@ -109,7 +128,8 @@ git push -u origin main
 ```
 
 Always inspect `git status` before committing. The included GitHub Actions
-workflow runs the syntax check and test suite for pushes to `main` and for pull
+workflow type-checks and tests the React frontend, creates its production build,
+then runs the Python syntax check and test suite for pushes to `main` and pull
 requests. No Hugging Face token or model weight is needed by these tests.
 
 This repository does not currently declare an open-source license. Add one only
@@ -162,57 +182,37 @@ medical conclusion. No weights are downloaded at runtime.
 The included quick head was fitted to an MHIST colorectal-polyp
 annotator-agreement proxy. Other tissues are out of domain. Its score is not
 calibrated confidence, disease likelihood, or clinical urgency. It exists only
-so the model-to-Streamlit flow can be tested before a more carefully trained
+so the model-to-browser flow can be tested before a more carefully trained
 Kaggle artifact replaces it.
 
-The viewer supports zoom, pan, fit, and reset when its interactive component is
-available, with a built-in static/zoom fallback so image review remains usable.
+The browser viewer shows the original image, feature overlay, and heatmap. The
+browser's native image controls can be used to inspect a preview.
 
 ## Manual review and session state
 
-`Review Queue` is the default tab. It sorts by effective reviewer priority,
-experimental proxy score when present, and filename. Reviewers can filter by
-Awaiting/Reviewed/All, priority, and group; use Previous/Next; save a review; or
-save and move to the next matching unreviewed image.
-
-The collapsible **Per-image statistics** table exposes the effective priority
-and numeric queue sort key, experimental agreement-proxy score, stable blocking
-and advisory quality codes, reviewed/awaiting state, de-identified group ID,
-and override status. These are the record-level inputs used by the aggregate
-dashboard counts.
+`Review Queue` is the default tab. It sorts uploaded images by effective
+reviewer priority, experimental proxy score when present, and filename.
+Reviewers can filter by Awaiting/Reviewed/All and priority, choose an image,
+inspect its original/overlay/heatmap views, save a review, reopen one, or save
+and move to the next matching unreviewed image.
 
 A de-identified case/slide group ID is optional for review and export, but is
 required by the later grouped-training preparation workflow. Reviewer notes are
-required only when the suggested priority is overridden. The bulk group action fills only blank records from the same
-top-level uploaded source; it never infers case membership from filenames,
-folders, or ZIP structure and never overwrites an existing group ID.
+required only when the suggested priority is overridden. The bulk group action
+applies the current ID to every image from the same top-level uploaded source;
+it does not infer case membership from filenames, folders, or ZIP structure.
 
 Reviewer notes, group IDs, confirmed or overridden priorities, completion time,
-and reviewed status are kept in Streamlit session state and associated with the
-image content. They survive queue navigation, filters, and local model-setting
-changes during the current browser session. They are not saved to a database,
-written into the source image, exported to an EMR, or shared automatically.
-Starting a new session or clearing Streamlit state removes them.
+and reviewed status are kept in a local in-memory browser session and associated
+with the image content. They are not saved to a database, written into the
+source image, exported to an EMR, or shared automatically. Starting a new batch
+or restarting the server removes them.
 
 ## Operational and model dashboards
 
 `Operational Dashboard` reports queue progress, effective priority counts,
-stable image-quality issue counts, skipped inputs, attempt-aware model-embedding
-success/failure/not-attempted counts, experimental/deterministic/fallback
-counts, proxy-score distribution, and reviewer agreement. Experimental-head
-agreement and its per-priority breakdown include only completed reviews that
-were actually scored by that head. Tissue context counts cover valid images in
-the current batch; the declaration is batch-level and reviewer-supplied, and the
-app does not use an automatic out-of-domain detector.
-
-When at least eight compatible embeddings from the same selected feature encoder are present, the operational tab
-adds one cached PCA-initialized t-SNE layout with three views colored by
-reviewer-confirmed priority, current batch domain declaration, and structured
-model/fallback source. Awaiting images are never presented as reviewer-confirmed.
-The domain view is normally one color because domain is declared once per batch.
-t-SNE axes, distances, and apparent clusters are descriptive and batch-relative;
-they are not scores, biological classes, diagnostic evidence, or proof of
-meaningful clusters. Adding images can change the layout.
+blocking image-quality findings, nonblocking advisories, reviewer agreement,
+and deterministic/experimental/quality-gate/runtime-fallback provenance.
 
 The configurable screening baseline defaults to 30 seconds per image. The
 displayed **Estimated time avoided reviewing unusable images** is calculated as
@@ -220,17 +220,9 @@ displayed **Estimated time avoided reviewing unusable images** is calculated as
 user-configured estimate for unusable inputs only, not measured workflow
 efficiency and not evidence that priority ranking saves time.
 
-`Model Evaluation & Limits` reads the complete held-out report and classification
-threshold from the local artifacts. The section is titled **MHIST
-Annotator-Agreement Proxy Evaluation — Not Cancer Accuracy**. If the evaluation
-threshold differs from the active head, or the report is missing or malformed,
-threshold-dependent metrics are hidden while inference remains available.
-
-Current training artifacts also include raw held-out ROC and precision-recall
-coordinates. The dashboard plots the ROC curve against a no-discrimination
-diagonal and the precision-recall curve against Review First prevalence. Legacy
-metrics artifacts without coordinates remain valid and show an explicit
-unavailable message instead of an invented curve.
+`Model Evaluation & Limits` displays the local feature-provider status and the
+validated experimental-head metrics exposed by the server. Numeric values use
+three decimal places. Missing or invalid evaluation values are never invented.
 
 ## Reviewed-label research export
 
@@ -273,7 +265,10 @@ split-ready manifest or embedding artifact.
 
 ## Project layout
 
-- `app.py` - Streamlit interface, dashboard, viewer, and review controls.
+- `app.py` - standard-library local HTTP API, session state, and safe serving of
+  the Vite production build.
+- `index.html` and `src/` - Vite entrypoint and typed React frontend source.
+- `dist/` - generated production frontend served by `app.py`.
 - `pathology_ai/pipeline.py` - input validation and safe in-memory ZIP handling.
 - `pathology_ai/quality.py` - deterministic image-quality checks.
 - `pathology_ai/triage.py` - the three review-order labels and sorting rules.
@@ -284,8 +279,6 @@ split-ready manifest or embedding artifact.
 - `pathology_ai/review_export.py` - reviewed-only, de-identified label and UNI
   embedding CSV export.
 - `pathology_ai/dashboard_metrics.py` - pure operational metric calculations.
-- `pathology_ai/dashboard_visuals.py` - validated, deterministic current-batch
-  t-SNE projection transform used by the Streamlit dashboard.
 - `pathology_ai/review_model.py` - optional trusted-local prototype head loader,
   metadata checks, score validation, and graceful fallback support.
 - `requirements-uni.txt` - optional CPU packages for local UNI inference.
@@ -298,14 +291,17 @@ split-ready manifest or embedding artifact.
   creates group-safe Kaggle artifacts only after validation passes.
 - `tests/test_pipeline.py` - in-memory upload, failure, ZIP, quality, and label
   tests.
-- `tests/test_app.py` - Streamlit startup, dashboard, viewer configuration, and
-  session-review workflow smoke tests.
+- `tests/test_app.py` - HTTP API, Vite asset, session, image, review, and export
+  smoke tests.
 
 ## Verification
 
-Run the syntax check and automated test suite:
+Run the frontend checks and production build, followed by the Python checks:
 
 ```powershell
+npm.cmd run typecheck
+npm.cmd test
+npm.cmd run build
 .\venv\Scripts\python.exe -m compileall -q app.py pathology_ai scripts tests
 .\venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
 .\venv\Scripts\python.exe -m pip check
