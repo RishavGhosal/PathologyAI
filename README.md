@@ -68,6 +68,21 @@ python -m venv venv
 The app does not need internet access at runtime and does not download model
 weights.
 
+## Deploy on Render
+
+The repository includes a Render Blueprint in `render.yaml`. After this branch
+is merged into `main`, open the Render dashboard, choose **New > Blueprint**,
+connect the `RishavGhosal/PathologyAI` repository, and approve the proposed
+`pathologyai` web service. Render installs the Python requirements, serves the
+tracked Vite production build, checks `/healthz`, and deploys new `main`
+commits after their GitHub checks pass.
+
+The hosted service reads Render's `PORT`, binds to `0.0.0.0`, and does not try
+to open a browser. Local `python app.py` behavior remains unchanged. The free
+service is suitable for demonstrations, but workspace data is held in memory
+and is lost when the process restarts. Do not upload protected health
+information or identifiable patient data.
+
 ### Optional local UNI mode
 
 UNI is optional. Install the CPU inference packages with:

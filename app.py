@@ -15,7 +15,7 @@ import mimetypes
 import os
 from pathlib import Path
 from threading import RLock, Timer
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 import webbrowser
@@ -35,7 +35,21 @@ from pathology_ai.triage import PRIORITIES, priority_sort_key
 from pathology_ai.uni_provider import get_uni_provider_status
 
 
-HOST, PORT = "127.0.0.1", int(os.getenv("PATHOLOGYAI_PORT", "8501"))
+
+def _server_settings(environ: Mapping[str, str] | None = None) -> tuple[str, int, bool]:
+    """Return host, port, and local-browser behavior for local or hosted runs."""
+
+    values = os.environ if environ is None else environ
+    hosted = values.get("RENDER", "").lower() == "true" or bool(values.get("PORT"))
+    host = values.get("PATHOLOGYAI_HOST", "0.0.0.0" if hosted else "127.0.0.1")
+    port = int(values.get("PORT") or values.get("PATHOLOGYAI_PORT") or "8501")
+    if not 1 <= port <= 65535:
+        raise ValueError("The server port must be between 1 and 65535.")
+    open_browser = not hosted and host in {"127.0.0.1", "localhost", "::1"}
+    return host, port, open_browser
+
+
+HOST, PORT, OPEN_BROWSER = _server_settings()
 PROJECT_DIR = Path(__file__).resolve().parent
 DIST_DIR = PROJECT_DIR / "dist"
 INDEX_PATH = DIST_DIR / "index.html"
@@ -257,6 +271,9 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path == "/healthz":
+            self._json({"status": "ok"})
+            return
         space, session = self._space()
         try:
             if path == "/api/status":
@@ -365,7 +382,8 @@ def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)
     url = f"http://{HOST}:{PORT}"
     print(f"PathologyAI is running at {url}")
-    Timer(0.35, lambda: webbrowser.open(url)).start()
+    if OPEN_BROWSER:
+        Timer(0.35, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

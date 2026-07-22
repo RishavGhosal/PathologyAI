@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: pathologyai
+    runtime: python
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    healthCheckPath: /healthz
+    autoDeployTrigger: checksPass

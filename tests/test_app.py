@@ -16,7 +16,7 @@ from zipfile import ZipFile
 
 from PIL import Image, ImageDraw
 
-from app import AppHandler, SESSIONS
+from app import AppHandler, SESSIONS, _server_settings
 
 
 def _image_bytes() -> bytes:
@@ -118,6 +118,13 @@ class StandaloneAppTests(unittest.TestCase):
         self.assertIn("does not provide a medical diagnosis", status["disclaimer"])
         self.assertEqual(len(self.cookie_jar), 1)
 
+    def test_health_check_does_not_create_a_session(self) -> None:
+        with self.opener.open(self.url + "/healthz") as response:
+            self.assertEqual(response.headers.get_content_type(), "application/json")
+            self.assertEqual(json.loads(response.read()), {"status": "ok"})
+            self.assertIsNone(response.headers.get("Set-Cookie"))
+        self.assertEqual(SESSIONS, {})
+
     def test_missing_and_traversal_static_paths_are_rejected(self) -> None:
         for path in (
             "/assets/does-not-exist.js",
@@ -204,3 +211,24 @@ class StandaloneAppTests(unittest.TestCase):
     def test_source_file_has_no_streamlit_dependency(self) -> None:
         source = Path(__file__).resolve().parents[1] / "app.py"
         self.assertNotIn("import streamlit", source.read_text(encoding="utf-8"))
+
+
+class ServerSettingsTests(unittest.TestCase):
+    def test_local_defaults_open_the_browser(self) -> None:
+        self.assertEqual(_server_settings({}), ("127.0.0.1", 8501, True))
+
+    def test_render_uses_public_host_and_platform_port(self) -> None:
+        self.assertEqual(
+            _server_settings({"RENDER": "true", "PORT": "10000"}),
+            ("0.0.0.0", 10000, False),
+        )
+
+    def test_explicit_local_settings_are_preserved(self) -> None:
+        self.assertEqual(
+            _server_settings({"PATHOLOGYAI_HOST": "localhost", "PATHOLOGYAI_PORT": "8504"}),
+            ("localhost", 8504, True),
+        )
+
+    def test_invalid_port_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "between 1 and 65535"):
+            _server_settings({"PORT": "70000"})
