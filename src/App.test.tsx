@@ -93,10 +93,10 @@ describe("PathologyAI React frontend", () => {
     expect(screen.getByText("Reviewer notes (required for override)")).toBeVisible();
 
     await user.click(screen.getByRole("tab", { name: "Operational Dashboard" }));
-    expect(screen.getByText("The time estimate covers only unusable/skipped files, not time saved by ranking.")).toBeVisible();
+    expect(screen.getByText("Estimated time avoided covers only unusable or skipped files, not time saved by ranking. 0s means this batch had no unusable or skipped files.")).toBeVisible();
     expect(screen.getByLabelText("Batch metrics")).toHaveTextContent("2valid images");
     expect(screen.getByLabelText("Batch metrics")).toHaveTextContent("0/2reviewed");
-    expect(screen.getByLabelText("Batch metrics")).toHaveTextContent("60squality-screening estimate");
+    expect(screen.getByLabelText("Batch metrics")).toHaveTextContent("60sestimated time avoided");
     expect(screen.getAllByText("Not measured")).toHaveLength(3);
     await user.click(screen.getByRole("tab", { name: "Model Evaluation & Limits" }));
     expect(screen.getByText("Experimental MHIST agreement-proxy head")).toBeVisible();
@@ -208,7 +208,7 @@ describe("PathologyAI React frontend", () => {
     await screen.findByRole("heading", { name: "Human review, organized" });
     expect(fetchMock.mock.calls[1][0]).toBe("/api/reset");
     expect(fetchMock.mock.calls[1][1]?.body).toBe("{}");
-    expect(screen.getByLabelText("Feature provider")).toHaveValue("deterministic");
+    expect(screen.getByLabelText("Feature provider")).toHaveValue("uni");
     expect(screen.getByLabelText("Batch tissue context")).toHaveValue("unknown_or_other");
     expect(pendingFile.files).toHaveLength(0);
   });

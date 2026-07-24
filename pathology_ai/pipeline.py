@@ -212,7 +212,7 @@ def _process_image_bytes(
         fallback = DeterministicDemoAttentionProvider()
         attention = fallback.analyze(image)
         notes.append(
-            "The configured local model provider could not process this image; the "
+            "The configured model provider could not process this image; the "
             f"deterministic demonstration fallback was used ({type(exc).__name__})."
         )
         fallback_reason = f"attention_provider_error:{type(exc).__name__}"

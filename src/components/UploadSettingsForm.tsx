@@ -46,7 +46,7 @@ export function UploadSettingsForm({
 
   useEffect(() => {
     const next = settings ?? DEFAULT_SETTINGS;
-    setProviderKind(next.provider_kind === "modal_uni" || next.provider_kind === "uni" ? preferredProviderKind("uni") : next.provider_kind === "modal_hibou" || next.provider_kind === "hibou" ? preferredProviderKind("hibou") : next.provider_kind);
+    setProviderKind(next.provider_kind === "modal_uni" || next.provider_kind === "uni" ? preferredProviderKind("uni") : next.provider_kind === "modal_hibou" || next.provider_kind === "hibou" ? preferredProviderKind("hibou") : preferredProviderKind("uni"));
     setDomainContext(next.domain_context);
     setScreeningSeconds(next.screening_seconds);
     setUseReviewModel(next.use_review_model);
@@ -54,6 +54,7 @@ export function UploadSettingsForm({
   }, [settings, providers]);
 
   const selectedProvider = providerKind === "modal_uni" ? "uni" : providerKind === "modal_hibou" ? "hibou" : providerKind;
+  const hasConfiguredEncoder = providers.uni.ready || providers.modal_uni.ready || providers.hibou.ready || providers.modal_hibou.ready;
 
   const providerHelp = useMemo(() => {
     if (providerKind === "uni") return providers.uni;
@@ -101,7 +102,6 @@ export function UploadSettingsForm({
             value={selectedProvider}
             onChange={(event) => setProviderKind(event.target.value === "uni" || event.target.value === "hibou" ? preferredProviderKind(event.target.value) : event.target.value as ProviderKind)}
           >
-            <option value="deterministic">Deterministic demonstration</option>
             <option value="uni" disabled={!providers.uni.ready && !providers.modal_uni.ready}>
               UNI feature exploration{providers.uni.ready || providers.modal_uni.ready ? "" : " (unavailable)"}
             </option>
@@ -113,6 +113,12 @@ export function UploadSettingsForm({
             <div className="field-help" aria-live="polite">
               <strong>{providerHelp.summary}</strong>
               <span>{providerHelp.detail}</span>
+            </div>
+          )}
+          {!hasConfiguredEncoder && (
+            <div className="field-help" aria-live="polite">
+              <strong>No model provider is configured</strong>
+              <span>Configure Modal or add approved local weights before testing an encoder.</span>
             </div>
           )}
         </div>
@@ -152,8 +158,8 @@ export function UploadSettingsForm({
             <span>Use experimental MHIST agreement-proxy head</span>
           </label>
           <div className="field-help">
-            <strong>{providers.modal_uni.ready ? "Modal UNI review head is available" : providers.review_model.summary}</strong>
-            <span>{providers.modal_uni.ready ? "The UNI embedding and MHIST proxy head will run remotely on Modal." : providers.review_model.detail}</span>
+            <strong>{providers.modal_uni.ready ? "Modal UNI endpoint is configured" : providers.review_model.summary}</strong>
+            <span>{providers.modal_uni.ready ? "The UNI embedding will run remotely; the MHIST proxy is requested remotely when enabled and falls back if unavailable." : providers.review_model.detail}</span>
           </div>
         </div>
       </div>

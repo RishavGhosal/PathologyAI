@@ -80,12 +80,26 @@ class Workspace:
     reviews: dict[str, dict[str, Any]] = field(default_factory=dict)
     domain_context: str = "unknown_or_other"
     screening_seconds: float = DEFAULT_SCREENING_SECONDS_PER_IMAGE
-    provider_kind: str = "deterministic"
+    provider_kind: str = field(default_factory=lambda: _preferred_provider_kind())
     use_review_model: bool = False
 
 
 SESSIONS: dict[str, Workspace] = {}
 LOCK = RLock()
+
+
+def _preferred_provider_kind() -> str:
+    """Prefer hosted Modal encoders, then local encoders, then the safety fallback."""
+
+    if get_modal_provider_status("uni").ready:
+        return "modal_uni"
+    if get_modal_provider_status("hibou").ready:
+        return "modal_hibou"
+    if get_uni_provider_status().ready:
+        return "uni"
+    if get_hibou_provider_status().ready:
+        return "hibou"
+    return "deterministic"
 
 
 def _static_file(url_path: str) -> Path | None:
@@ -322,6 +336,14 @@ class AppHandler(BaseHTTPRequestHandler):
                 if kind not in {"deterministic", "uni", "hibou", "modal_uni", "modal_hibou"}:
                     raise ValueError("Unsupported feature provider.")
                 requested_head = fields.get("use_review_model") == "true"
+                if kind == "deterministic" and (
+                    get_modal_provider_status("uni").ready or get_modal_provider_status("hibou").ready
+                ) and not (get_uni_provider_status().ready or get_hibou_provider_status().ready):
+                    kind = _preferred_provider_kind()
+                if kind == "uni" and not get_uni_provider_status().ready and get_modal_provider_status("uni").ready:
+                    kind = "modal_uni"
+                elif kind == "hibou" and not get_hibou_provider_status().ready and get_modal_provider_status("hibou").ready:
+                    kind = "modal_hibou"
                 use_head = requested_head and kind == "uni" and get_review_model_status().ready
                 remote_kind = {"modal_uni": "uni", "modal_hibou": "hibou"}.get(kind)
                 if remote_kind:
@@ -368,7 +390,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 space.reviews.clear()
                 space.domain_context = "unknown_or_other"
                 space.screening_seconds = DEFAULT_SCREENING_SECONDS_PER_IMAGE
-                space.provider_kind = "deterministic"
+                space.provider_kind = _preferred_provider_kind()
                 space.use_review_model = False
                 self._json(_workspace_json(space), session=session)
             else:

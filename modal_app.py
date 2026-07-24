@@ -25,8 +25,8 @@ MODEL_VOLUME = modal.Volume.from_name("pathologyai-hibou-models", create_if_miss
 MODEL_ROOT = Path("/models")
 UNI_DIR = MODEL_ROOT / "uni"
 HIBOU_DIR = MODEL_ROOT / "hibou-b"
-REVIEW_HEAD_DIR = MODEL_ROOT / "review_priority_head"
-REVIEW_HEAD_REMOTE_DIR = "/models/review_priority_head"
+REVIEW_HEAD_DIR = Path("/review_priority_head")
+REVIEW_HEAD_REMOTE_DIR = "/review_priority_head"
 LOCAL_REVIEW_HEAD_DIR = Path(__file__).resolve().parent / "models" / "review_priority_head"
 
 image = (
@@ -64,10 +64,12 @@ def _ensure_snapshot(repo_id: str, target: Path) -> Path:
     return target
 
 
-def _ensure_models() -> tuple[Path, Path]:
-    hibou_dir = _ensure_snapshot("histai/hibou-b", HIBOU_DIR)
-    uni_dir = _ensure_snapshot("MahmoodLab/UNI", UNI_DIR)
-    return uni_dir, hibou_dir
+def _ensure_model(provider_kind: str) -> Path:
+    """Download only the model needed for this request into the mounted volume."""
+
+    if provider_kind == "uni":
+        return _ensure_snapshot("MahmoodLab/UNI", UNI_DIR)
+    return _ensure_snapshot("histai/hibou-b", HIBOU_DIR)
 
 
 def _png_base64(image) -> str:
@@ -109,11 +111,11 @@ def infer(payload: dict) -> dict:
     except Exception as exc:
         raise ValueError("image_base64 must contain a valid image.") from exc
 
-    uni_dir, hibou_dir = _ensure_models()
+    model_dir = _ensure_model(provider_kind)
     if provider_kind == "uni":
-        result = LocalUNIFeatureProvider(uni_dir / "pytorch_model.bin").analyze(image)
+        result = LocalUNIFeatureProvider(model_dir / "pytorch_model.bin").analyze(image)
     else:
-        result = LocalHibouFeatureProvider(hibou_dir).analyze(image)
+        result = LocalHibouFeatureProvider(model_dir).analyze(image)
 
     response = {
         "overlay_png": _png_base64(result.overlay),

@@ -40,7 +40,7 @@ export function DashboardTab({ batch }: { batch: BatchState }) {
           </dl>
         </section>
       </div>
-      <p className="footnote">The time estimate covers only unusable/skipped files, not time saved by ranking.</p>
+      <p className="footnote">Estimated time avoided covers only unusable or skipped files, not time saved by ranking. 0s means this batch had no unusable or skipped files.</p>
     </section>
   );
 }

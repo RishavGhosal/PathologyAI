@@ -27,7 +27,7 @@ export function MetricsCards({ metrics }: { metrics: OperationalMetrics }) {
     [metrics.awaiting_count, "awaiting review"],
     [metrics.quality_pass_count, "passed quality"],
     [metrics.skipped_count, "skipped inputs"],
-    [`${Math.round(metrics.estimated_time_avoided_seconds)}s`, "quality-screening estimate"],
+    [`${Math.round(metrics.estimated_time_avoided_seconds)}s`, "estimated time avoided"],
   ];
   return (
     <div className="metrics" aria-label="Batch metrics">
