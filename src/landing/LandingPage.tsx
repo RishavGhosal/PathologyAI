@@ -1,6 +1,9 @@
 import { motion, useReducedMotion } from "framer-motion";
+import { lazy, Suspense } from "react";
+import { LANDING_PROJECTION_POINTS } from "./embeddingProjection";
 
 const ease = [0.22, 1, 0.36, 1] as const;
+const EmbeddingSpace3D = lazy(() => import("./EmbeddingSpace3D").then((module) => ({ default: module.EmbeddingSpace3D })));
 
 export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
   const reducedMotion = useReducedMotion();
@@ -46,7 +49,7 @@ export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
             <p>Three simple stages keep the model output legible and the reviewer in control.</p>
           </div>
           <div className="landing-steps">
-            <Step icon="cluster" title="Create embeddings" text="UNI maps each image into a compact representation of visual features." />
+            <Step icon="cluster" title="Create embeddings" text="UNI (recommended) or Hibou-B (alternative) maps each image into a compact representation of visual features." />
             <Step icon="tag" title="Estimate proxy labels" text="The MHIST head turns those representations into exploratory review-order labels." />
             <Step icon="checklist" title="Triage with context" text="A reviewer checks image quality, examines the visual summary, and confirms the queue." />
           </div>
@@ -99,22 +102,25 @@ function StepIcon({ kind }: { kind: "cluster" | "tag" | "checklist" }) {
 }
 
 function EmbeddingCluster({ reducedMotion }: { reducedMotion: boolean }) {
+  return <Suspense fallback={<StaticEmbeddingCluster reducedMotion={reducedMotion} />}><EmbeddingSpace3D reducedMotion={reducedMotion} /></Suspense>;
+}
+
+function StaticEmbeddingCluster({ reducedMotion }: { reducedMotion: boolean }) {
   const drift = reducedMotion ? {} : { y: [0, -5, 2, 0], x: [0, 2, -1, 0] };
   return (
     <motion.div className="embedding-cluster" initial={reducedMotion ? false : { opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.7, delay: 0.24, ease }}>
-      <svg viewBox="0 0 520 360" role="img" aria-label="Abstract embedding space with loosely grouped image representations">
+      <svg viewBox="0 0 520 360" role="img" aria-label="Loading an interactive 3D t-SNE projection of real UNI embeddings from an MHIST sample">
         <path className="embedding-axis" d="M55 300H472M55 300V48" />
-        <path className="embedding-contour" d="M105 115c31-48 111-64 153-10s5 103-48 119-133-20-105-109ZM291 78c43-35 125-29 155 20s-4 109-64 121-124-18-124-75c0-26 13-50 33-66Z" />
         <motion.g animate={drift} transition={reducedMotion ? undefined : { duration: 12, repeat: Infinity, ease: "easeInOut" }}>
-          <g className="embedding-cluster-a"><circle cx="126" cy="136" r="7" /><circle cx="155" cy="112" r="5" /><circle cx="183" cy="143" r="8" /><circle cx="205" cy="106" r="4" /><circle cx="223" cy="164" r="6" /><circle cx="148" cy="181" r="4" /><circle cx="194" cy="192" r="5" /><circle cx="105" cy="169" r="3" /></g>
-          <g className="embedding-cluster-b"><circle cx="321" cy="110" r="6" /><circle cx="349" cy="87" r="4" /><circle cx="375" cy="126" r="7" /><circle cx="407" cy="103" r="5" /><circle cx="429" cy="151" r="4" /><circle cx="342" cy="168" r="5" /><circle cx="389" cy="181" r="7" /><circle cx="301" cy="151" r="3" /></g>
-          <g className="embedding-cluster-c"><circle cx="270" cy="244" r="5" /><circle cx="300" cy="224" r="7" /><circle cx="328" cy="260" r="4" /><circle cx="356" cy="232" r="5" /><circle cx="385" cy="268" r="3" /></g>
+          {LANDING_PROJECTION_POINTS.map((point, index) => {
+            const projectedX = point.x * 0.78 + point.z * 0.22;
+            const projectedY = point.y * 0.8 + point.z * 0.2;
+            return <circle key={`${point.x}-${point.y}-${point.z}`} className={`embedding-point embedding-point-${point.tone}`} cx={58 + projectedX * 400} cy={58 + (1 - projectedY) * 218} r={3.5 + (index % 4) * 1.1 + point.z * 1.4} opacity={0.5 + point.z * 0.5} />;
+          })}
         </motion.g>
-        <circle className="embedding-focus" cx="260" cy="137" r="5" />
-        <path className="embedding-link" d="M260 137 300 151M260 137 223 164M260 137 270 244" />
         <text x="59" y="326">representation space</text><text x="23" y="54" transform="rotate(-90 23 54)">image features</text>
       </svg>
-      <span className="embedding-caption">UNI embedding space · illustrative view</span>
+      <span className="embedding-caption">UNI embeddings · MHIST sample · 3D t-SNE projection · loading interactive view</span>
     </motion.div>
   );
 }
