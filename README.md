@@ -123,6 +123,49 @@ It is not a tissue classifier, diagnosis model, or review-priority model, and
 it does not use the UNI-only MHIST proxy head. The app deliberately does not
 download model weights or remote code during normal use.
 
+### Optional Modal GPU mode
+
+The repository includes `modal_app.py`, a separate Modal deployment target for
+remote UNI and Hibou-B inference. The same endpoint can also run the optional
+UNI-based MHIST review-priority head when the local
+`models/review_priority_head/` artifact is present at deployment time. It uses
+a Modal Volume for the gated model snapshots and a GPU-backed HTTP endpoint,
+while the existing Python app keeps session state, review edits, image
+rendering, and CSV export.
+
+Install and authenticate Modal in the project environment, then deploy:
+
+```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements-modal.txt
+.\venv\Scripts\python.exe -m modal setup
+.\venv\Scripts\python.exe -m modal deploy modal_app.py
+```
+
+Before deploying, create a Modal secret named `huggingface` containing
+`HF_TOKEN`. Both model repositories require gated access even though Hibou-B's
+code license is Apache-2.0; UNI additionally has its CC-BY-NC-ND-4.0 research
+and non-redistribution terms. The endpoint already attaches this secret during
+deployment. If you want the MHIST head remotely, make sure
+`models/review_priority_head/` exists locally before running `modal deploy`;
+that small project artifact is copied into the Modal image and is not committed
+to Git.
+
+The endpoint uses Modal proxy authentication, so create a proxy token and
+configure the app host with:
+
+```text
+PATHOLOGYAI_MODAL_URL=https://YOUR_MODAL_FUNCTION_URL
+MODAL_KEY=wk-...
+MODAL_SECRET=ws-...
+```
+
+On Render, add those as environment secrets. The front-end will then show
+**Modal UNI GPU exploration** and **Modal Hibou-B GPU exploration** as
+available. Select Modal UNI to use the remote MHIST head checkbox. If a
+request fails, the backend records a deterministic fallback rather than
+breaking the review workflow. All remote outputs remain exploratory feature
+variation and review-order suggestions, not diagnoses.
+
 ## Publish safely to GitHub
 
 The repository includes a `.gitignore` that excludes the virtual environment,

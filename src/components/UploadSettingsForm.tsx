@@ -51,6 +51,8 @@ export function UploadSettingsForm({
   const providerHelp = useMemo(() => {
     if (providerKind === "uni") return providers.uni;
     if (providerKind === "hibou") return providers.hibou;
+    if (providerKind === "modal_uni") return providers.modal_uni;
+    if (providerKind === "modal_hibou") return providers.modal_hibou;
     return null;
   }, [providerKind, providers]);
 
@@ -96,8 +98,14 @@ export function UploadSettingsForm({
             <option value="uni" disabled={!providers.uni.ready}>
               Local UNI feature exploration{providers.uni.ready ? "" : " (unavailable)"}
             </option>
+            <option value="modal_uni" disabled={!providers.modal_uni.ready}>
+              Modal UNI GPU exploration{providers.modal_uni.ready ? "" : " (not configured)"}
+            </option>
             <option value="hibou" disabled={!providers.hibou.ready}>
               Local Hibou-B feature exploration{providers.hibou.ready ? "" : " (unavailable)"}
+            </option>
+            <option value="modal_hibou" disabled={!providers.modal_hibou.ready}>
+              Modal Hibou-B GPU exploration{providers.modal_hibou.ready ? "" : " (not configured)"}
             </option>
           </select>
           {providerHelp && (
@@ -136,15 +144,15 @@ export function UploadSettingsForm({
               id="use-review-model"
               name="use_review_model"
               type="checkbox"
-              disabled={!providers.review_model.ready}
+              disabled={!providers.review_model.ready && !providers.modal_uni.ready}
               checked={useReviewModel}
               onChange={(event) => setUseReviewModel(event.target.checked)}
             />
             <span>Use experimental MHIST agreement-proxy head</span>
           </label>
           <div className="field-help">
-            <strong>{providers.review_model.summary}</strong>
-            <span>{providers.review_model.detail}</span>
+            <strong>{providers.modal_uni.ready ? "Modal UNI review head is available" : providers.review_model.summary}</strong>
+            <span>{providers.modal_uni.ready ? "The UNI embedding and MHIST proxy head will run remotely on Modal." : providers.review_model.detail}</span>
           </div>
         </div>
       </div>

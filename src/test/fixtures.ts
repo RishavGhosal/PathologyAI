@@ -5,6 +5,8 @@ export const disclaimer = "This research and education prototype provides review
 export const providers = {
   uni: { ready: true, summary: "Local UNI encoder is ready", detail: "UNI live detail" },
   hibou: { ready: true, summary: "Local Hibou-B encoder is ready", detail: "Hibou live detail" },
+  modal_uni: { ready: true, summary: "Modal UNI API is configured", detail: "Modal UNI live detail" },
+  modal_hibou: { ready: true, summary: "Modal Hibou-B API is configured", detail: "Modal live detail" },
   review_model: {
     ready: true,
     summary: "Experimental priority head is ready",

@@ -5,7 +5,7 @@ export const PRIORITIES = [
 ] as const;
 
 export type Priority = (typeof PRIORITIES)[number];
-export type ProviderKind = "deterministic" | "uni" | "hibou";
+export type ProviderKind = "deterministic" | "uni" | "hibou" | "modal_uni" | "modal_hibou";
 export type DomainContext = "unknown_or_other" | "mhist_like_colorectal_polyp";
 export type TabId = "queue" | "dashboard" | "evaluation";
 export type ImageView = "original" | "overlay" | "heatmap";
@@ -26,6 +26,8 @@ export interface ReviewModelStatus extends ProviderStatus {
 export interface Providers {
   uni: ProviderStatus;
   hibou: ProviderStatus;
+  modal_uni: ProviderStatus;
+  modal_hibou: ProviderStatus;
   review_model: ReviewModelStatus;
 }
 

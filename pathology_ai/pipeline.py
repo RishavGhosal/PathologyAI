@@ -217,7 +217,10 @@ def _process_image_bytes(
         )
         fallback_reason = f"attention_provider_error:{type(exc).__name__}"
     prediction = None
-    if review_model is not None and quality.adequate:
+    remote_prediction = getattr(provider, "last_review_prediction", None)
+    if remote_prediction is not None and quality.adequate:
+        prediction = remote_prediction
+    elif review_model is not None and quality.adequate:
         if attention.embedding is None:
             notes.append(
                 "The experimental priority head could not run because a UNI embedding "

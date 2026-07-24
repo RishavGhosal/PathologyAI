@@ -28,6 +28,7 @@ from pathology_ai.dashboard_metrics import (
     build_operational_metrics,
 )
 from pathology_ai.hibou_provider import get_hibou_provider_status
+from pathology_ai.modal_provider import get_modal_provider_status
 from pathology_ai.pipeline import BatchResult, UploadPayload, format_file_size, process_uploads
 from pathology_ai.review_export import build_review_export_csv, validate_optional_group_id, validate_review_fields
 from pathology_ai.review_model import get_review_model, get_review_model_status
@@ -132,10 +133,14 @@ def _review_defaults(record: Any) -> dict[str, Any]:
 
 
 def _providers() -> dict[str, Any]:
-    uni, hibou, head = get_uni_provider_status(), get_hibou_provider_status(), get_review_model_status()
+    uni, hibou = get_uni_provider_status(), get_hibou_provider_status()
+    modal_uni, modal_hibou = get_modal_provider_status("uni"), get_modal_provider_status("hibou")
+    head = get_review_model_status()
     return {
         "uni": {"ready": uni.ready, "summary": uni.summary, "detail": uni.detail},
         "hibou": {"ready": hibou.ready, "summary": hibou.summary, "detail": hibou.detail},
+        "modal_uni": {"ready": modal_uni.ready, "summary": modal_uni.summary, "detail": modal_uni.detail},
+        "modal_hibou": {"ready": modal_hibou.ready, "summary": modal_hibou.summary, "detail": modal_hibou.detail},
         "review_model": {
             "ready": head.ready,
             "summary": head.summary,
@@ -314,13 +319,20 @@ class AppHandler(BaseHTTPRequestHandler):
                 if not files:
                     raise ValueError("Choose at least one image or ZIP file.")
                 kind = fields.get("provider_kind", "deterministic")
-                if kind not in {"deterministic", "uni", "hibou"}:
+                if kind not in {"deterministic", "uni", "hibou", "modal_uni", "modal_hibou"}:
                     raise ValueError("Unsupported feature provider.")
-                provider = get_attention_provider(provider_kind=kind)
-                use_head = fields.get("use_review_model") == "true" and kind == "uni" and get_review_model_status().ready
+                requested_head = fields.get("use_review_model") == "true"
+                use_head = requested_head and kind == "uni" and get_review_model_status().ready
+                remote_kind = {"modal_uni": "uni", "modal_hibou": "hibou"}.get(kind)
+                if remote_kind:
+                    from pathology_ai.modal_provider import ModalFeatureProvider
+
+                    provider = ModalFeatureProvider(remote_kind, use_review_model=requested_head)
+                else:
+                    provider = get_attention_provider(provider_kind=kind)
                 space.batch = process_uploads(files, provider, get_review_model() if use_head else None)
                 space.reviews = {record.image_id: _review_defaults(record) for record in space.batch.records}
-                space.provider_kind, space.use_review_model = kind, use_head
+                space.provider_kind, space.use_review_model = kind, requested_head and (use_head or remote_kind == "uni")
                 space.domain_context = fields.get("domain_context", "unknown_or_other") if fields.get("domain_context") in DOMAIN_VALUES.values() else "unknown_or_other"
                 space.screening_seconds = max(0.0, min(600.0, float(fields.get("screening_seconds", DEFAULT_SCREENING_SECONDS_PER_IMAGE))))
                 self._json(_workspace_json(space), HTTPStatus.CREATED, session)

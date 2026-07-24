@@ -1,0 +1,3 @@
+# Installed inside the Modal image by modal_app.py; do not add these to the
+# Render/local lightweight requirements unless the app will run inference there.
+modal
