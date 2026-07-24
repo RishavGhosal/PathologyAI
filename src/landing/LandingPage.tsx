@@ -36,6 +36,7 @@ export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
             <span className="landing-note-line" aria-hidden="true" />
             <p>Built for accountable review: every suggested queue position stays visible, explainable, and human-confirmed.</p>
           </motion.div>
+          <EmbeddingCluster reducedMotion={Boolean(reducedMotion)} />
         </section>
 
         <motion.section className="landing-how" aria-labelledby="how-title" {...reveal} viewport={{ once: true, amount: 0.18 }}>
@@ -45,10 +46,19 @@ export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
             <p>Three simple stages keep the model output legible and the reviewer in control.</p>
           </div>
           <div className="landing-steps">
-            <Step number="01" title="Create embeddings" text="UNI maps each image into a compact representation of visual features." />
-            <Step number="02" title="Estimate proxy labels" text="The MHIST head turns those representations into exploratory review-order labels." />
-            <Step number="03" title="Triage with context" text="A reviewer checks image quality, examines the visual summary, and confirms the queue." />
+            <Step icon="cluster" title="Create embeddings" text="UNI maps each image into a compact representation of visual features." />
+            <Step icon="tag" title="Estimate proxy labels" text="The MHIST head turns those representations into exploratory review-order labels." />
+            <Step icon="checklist" title="Triage with context" text="A reviewer checks image quality, examines the visual summary, and confirms the queue." />
           </div>
+        </motion.section>
+
+        <motion.section className="landing-preview" aria-labelledby="preview-title" {...reveal} viewport={{ once: true, amount: 0.16 }}>
+          <div className="landing-section-intro">
+            <p className="landing-kicker">Inside the workspace</p>
+            <h2 id="preview-title">A review queue you can read at a glance.</h2>
+            <p>Keep the original image, visual summary, queue suggestion, and reviewer decision in one calm workspace.</p>
+          </div>
+          <WorkspacePreview />
         </motion.section>
 
         <motion.section className="landing-cta" aria-labelledby="cta-title" {...reveal} viewport={{ once: true, amount: 0.24 }}>
@@ -68,13 +78,60 @@ export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
   );
 }
 
-function Step({ number, title, text }: { number: string; title: string; text: string }) {
+function Step({ icon, title, text }: { icon: "cluster" | "tag" | "checklist"; title: string; text: string }) {
   return (
     <article className="landing-step">
-      <span className="landing-step-number">{number}</span>
+      <StepIcon kind={icon} />
       <h3>{title}</h3>
       <p>{text}</p>
     </article>
+  );
+}
+
+function StepIcon({ kind }: { kind: "cluster" | "tag" | "checklist" }) {
+  if (kind === "tag") {
+    return <svg className="landing-step-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M6 7.5h10.2L26 17.3 17.3 26 7.5 16.2V7.5Z" /><circle cx="11.5" cy="12" r="1.5" /><path d="m15 17 2 2 4-4" /></svg>;
+  }
+  if (kind === "checklist") {
+    return <svg className="landing-step-icon" viewBox="0 0 32 32" aria-hidden="true"><rect x="7" y="6" width="18" height="21" rx="2" /><path d="m11 12 1.5 1.5L15 11M18 12h4M11 18l1.5 1.5L15 17M18 18h4M11 24h1M18 24h4" /></svg>;
+  }
+  return <svg className="landing-step-icon" viewBox="0 0 32 32" aria-hidden="true"><circle cx="8" cy="10" r="2.5" /><circle cx="23" cy="7" r="2.5" /><circle cx="23" cy="23" r="2.5" /><circle cx="10" cy="24" r="2.5" /><path d="m10.3 10 10.2-2M9.5 12l-.1 9.5M12 23.5l8.5-.8M23 9.5v11" /></svg>;
+}
+
+function EmbeddingCluster({ reducedMotion }: { reducedMotion: boolean }) {
+  const drift = reducedMotion ? {} : { y: [0, -5, 2, 0], x: [0, 2, -1, 0] };
+  return (
+    <motion.div className="embedding-cluster" initial={reducedMotion ? false : { opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.7, delay: 0.24, ease }}>
+      <svg viewBox="0 0 520 360" role="img" aria-label="Abstract embedding space with loosely grouped image representations">
+        <path className="embedding-axis" d="M55 300H472M55 300V48" />
+        <path className="embedding-contour" d="M105 115c31-48 111-64 153-10s5 103-48 119-133-20-105-109ZM291 78c43-35 125-29 155 20s-4 109-64 121-124-18-124-75c0-26 13-50 33-66Z" />
+        <motion.g animate={drift} transition={reducedMotion ? undefined : { duration: 12, repeat: Infinity, ease: "easeInOut" }}>
+          <g className="embedding-cluster-a"><circle cx="126" cy="136" r="7" /><circle cx="155" cy="112" r="5" /><circle cx="183" cy="143" r="8" /><circle cx="205" cy="106" r="4" /><circle cx="223" cy="164" r="6" /><circle cx="148" cy="181" r="4" /><circle cx="194" cy="192" r="5" /><circle cx="105" cy="169" r="3" /></g>
+          <g className="embedding-cluster-b"><circle cx="321" cy="110" r="6" /><circle cx="349" cy="87" r="4" /><circle cx="375" cy="126" r="7" /><circle cx="407" cy="103" r="5" /><circle cx="429" cy="151" r="4" /><circle cx="342" cy="168" r="5" /><circle cx="389" cy="181" r="7" /><circle cx="301" cy="151" r="3" /></g>
+          <g className="embedding-cluster-c"><circle cx="270" cy="244" r="5" /><circle cx="300" cy="224" r="7" /><circle cx="328" cy="260" r="4" /><circle cx="356" cy="232" r="5" /><circle cx="385" cy="268" r="3" /></g>
+        </motion.g>
+        <circle className="embedding-focus" cx="260" cy="137" r="5" />
+        <path className="embedding-link" d="M260 137 300 151M260 137 223 164M260 137 270 244" />
+        <text x="59" y="326">representation space</text><text x="23" y="54" transform="rotate(-90 23 54)">image features</text>
+      </svg>
+      <span className="embedding-caption">UNI embedding space · illustrative view</span>
+    </motion.div>
+  );
+}
+
+function WorkspacePreview() {
+  return (
+    <div className="workspace-preview" aria-label="Simplified preview of the PathologyAI review workspace">
+      <div className="workspace-browser-bar"><span /><span /><span /><div className="workspace-address">pathologyai / review workspace</div></div>
+      <div className="workspace-preview-body">
+        <aside className="workspace-sidebar"><strong>PathologyAI</strong><span className="workspace-sidebar-active">Review queue</span><span>Dashboard</span><span>Evaluation</span><small>Human review required</small></aside>
+        <div className="workspace-main">
+          <div className="workspace-main-heading"><div><small>REVIEW QUEUE</small><h3>Batch overview</h3></div><span className="workspace-badge">12 images</span></div>
+          <div className="workspace-metrics"><div><small>Awaiting review</small><strong>08</strong></div><div><small>Reviewed</small><strong>04</strong></div><div><small>Next queue</small><strong>03</strong></div></div>
+          <div className="workspace-content-row"><div className="workspace-image"><svg viewBox="0 0 260 150" aria-hidden="true"><rect width="260" height="150" rx="8" fill="#d9e3da" /><path d="M0 96c28-35 48-24 69-2s42 17 61-13 39-29 60-9 42 13 70-24v102H0Z" fill="#8db2a1" opacity=".72" /><circle cx="72" cy="57" r="19" fill="#527c70" opacity=".62" /><circle cx="160" cy="74" r="24" fill="#b9d8ca" opacity=".9" /><path d="M23 34c30 19 40 11 67 1M178 35c23 14 40 10 64-4" fill="none" stroke="#2f6f69" strokeWidth="2" opacity=".7" /></svg><small>Original image</small></div><div className="workspace-queue"><div><span className="queue-dot queue-dot-high" /><strong>Review First</strong><small>Image quality and feature summary available</small></div><div><span className="queue-dot queue-dot-mid" /><strong>Needs Better Image</strong><small>Manual check suggested before review</small></div><div><span className="queue-dot queue-dot-low" /><strong>Lower Priority</strong><small>Awaiting reviewer confirmation</small></div></div></div>
+        </div>
+      </div>
+    </div>
   );
 }
 
