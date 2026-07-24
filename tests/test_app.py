@@ -96,6 +96,9 @@ class StandaloneAppTests(unittest.TestCase):
         with self.opener.open(self.url + "/index.html") as response:
             self.assertEqual(response.headers.get_content_type(), "text/html")
             self.assertEqual(response.read().decode(), page)
+        with self.opener.open(self.url + "/app") as response:
+            self.assertEqual(response.headers.get_content_type(), "text/html")
+            self.assertEqual(response.read().decode(), page)
 
         asset_paths = re.findall(r'(?:src|href)="(/assets/[^"]+)"', page)
         script_paths = [path for path in asset_paths if path.endswith(".js")]

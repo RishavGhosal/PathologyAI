@@ -95,7 +95,7 @@ def _static_file(url_path: str) -> Path | None:
         decoded = unquote(url_path, errors="strict")
     except UnicodeDecodeError:
         return None
-    if decoded in {"", "/", "/index.html"}:
+    if decoded in {"", "/", "/index.html", "/app", "/app/"}:
         candidate = INDEX_PATH
     else:
         if not decoded.startswith("/") or "\x00" in decoded:
