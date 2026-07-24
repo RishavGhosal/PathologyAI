@@ -223,16 +223,29 @@ describe("PathologyAI React frontend", () => {
   });
 
   it("shows API errors and auto-dismisses toast messages after five seconds", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    vi.useFakeTimers();
     fetchMock
       .mockImplementationOnce(() => response(preUpload()))
       .mockImplementationOnce(() => Promise.resolve({ ok: false, json: () => Promise.resolve({ error: "Upload rejected" }) } as Response));
     render(<App />);
-    await screen.findByRole("heading", { name: "Human review, organized" });
-    await user.upload(screen.getByLabelText("Choose one or more files"), new File(["bad"], "bad.png", { type: "image/png" }));
-    fireEvent.submit(screen.getByRole("button", { name: "Process files" }).closest("form")!);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Upload rejected");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("heading", { name: "Human review, organized" })).toBeVisible();
+    const uploadInput = screen.getByLabelText("Choose one or more files");
+    fireEvent.change(uploadInput, {
+      target: { files: [new File(["bad"], "bad.png", { type: "image/png" })] },
+    });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole("button", { name: "Process files" }).closest("form")!);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("Upload rejected");
     act(() => vi.advanceTimersByTime(5000));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
