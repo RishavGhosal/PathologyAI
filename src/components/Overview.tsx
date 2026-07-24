@@ -1,7 +1,9 @@
 import type { Providers, ProviderStatus } from "../types";
 
 export function Overview({ disclaimer, providers }: { disclaimer: string; providers: Providers }) {
-  const readyCount = [providers.uni, providers.hibou, providers.modal_uni, providers.modal_hibou, providers.review_model].filter((provider) => provider.ready).length;
+  const uni = mergeProviderStatus(providers.uni, providers.modal_uni, "UNI");
+  const hibou = mergeProviderStatus(providers.hibou, providers.modal_hibou, "Hibou-B");
+  const readyCount = [uni, hibou].filter((provider) => provider.ready).length;
 
   return (
     <div className="landing">
@@ -23,22 +25,19 @@ export function Overview({ disclaimer, providers }: { disclaimer: string; provid
       <section className="model-status panel" aria-labelledby="model-status-title">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">Local model stack</p>
-            <h2 id="model-status-title">Artifacts detected on this machine</h2>
+            <p className="eyebrow">Model providers</p>
+            <h2 id="model-status-title">Choose a feature encoder</h2>
           </div>
-          <span className="status-summary"><span className="status-dot" />{readyCount}/5 ready</span>
+          <span className="status-summary"><span className="status-dot" />{readyCount}/2 available</span>
         </div>
         <p className="muted model-status-intro">
-          Local weights stay on this machine; the Modal option sends images to the configured remote GPU endpoint. Choose a provider below when you process a batch.
+          Choose UNI or Hibou-B when you process a batch. The app uses local weights when available and routes through Modal on hosted deployments.
         </p>
         <div className="model-status-grid">
-          <ProviderStatusCard label="UNI" tone="cyan" provider={providers.uni} detailLabel="Feature encoder" />
-          <ProviderStatusCard label="Hibou-B" tone="violet" provider={providers.hibou} detailLabel="Pathology encoder" />
-          <ProviderStatusCard label="Modal UNI" tone="cyan" provider={providers.modal_uni} detailLabel="Remote GPU encoder" />
-          <ProviderStatusCard label="Modal Hibou-B" tone="cyan" provider={providers.modal_hibou} detailLabel="Remote GPU encoder" />
-          <ProviderStatusCard label="MHIST head" tone="amber" provider={providers.review_model} detailLabel="Review-order proxy" />
+          <ProviderStatusCard label="UNI" tone="cyan" provider={uni} detailLabel="General-purpose embeddings" description="UNI creates general-purpose image embeddings. The experimental MHIST proxy head uses UNI embeddings when enabled." />
+          <ProviderStatusCard label="Hibou-B" tone="violet" provider={hibou} detailLabel="General pathology encoder" description="Hibou-B creates general pathology feature embeddings for exploratory visual summaries." />
         </div>
-        <p className="model-footnote">The experimental head uses UNI features to estimate annotator-agreement proxy patterns; it is not a diagnostic model.</p>
+        <p className="model-footnote">The MHIST proxy is an optional UNI-based review-order capability, not a separate feature encoder.</p>
       </section>
 
       <section className="scope-strip" aria-label="Product guardrails">
@@ -53,13 +52,25 @@ export function Overview({ disclaimer, providers }: { disclaimer: string; provid
   );
 }
 
-function ProviderStatusCard({ label, tone, provider, detailLabel }: { label: string; tone: string; provider: ProviderStatus; detailLabel: string }) {
+function mergeProviderStatus(local: ProviderStatus, remote: ProviderStatus, label: string): ProviderStatus {
+  if (local.ready) return local;
+  if (remote.ready) {
+    return {
+      ready: true,
+      summary: `${label} available through Modal`,
+      detail: remote.detail,
+    };
+  }
+  return local;
+}
+
+function ProviderStatusCard({ label, tone, provider, detailLabel, description }: { label: string; tone: string; provider: ProviderStatus; detailLabel: string; description: string }) {
   return (
     <article className={`model-card ${tone} ${provider.ready ? "ready" : "unavailable"}`}>
       <div className="model-card-top"><span className="model-mark">{label === "MHIST head" ? "↗" : "✦"}</span><span className="model-label">{label}</span><span className="model-ready">{provider.ready ? "Ready" : "Unavailable"}</span></div>
-      <strong>{provider.ready ? (label.startsWith("Modal") ? "Remote endpoint configured" : "Artifact detected locally") : provider.summary}</strong>
+      <strong>{provider.ready ? description : provider.summary}</strong>
       <span className="model-detail-label">{detailLabel}</span>
-      <p>{provider.ready ? (label.startsWith("Modal") ? "Ready for remote exploratory GPU inference." : "Ready for local exploratory inference.") : provider.detail}</p>
+      <p>{provider.detail}</p>
     </article>
   );
 }

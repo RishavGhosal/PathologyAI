@@ -24,6 +24,7 @@ describe("PathologyAI React frontend", () => {
     const initial = preUpload();
     const uploaded = withBatch();
     initial.providers.hibou.ready = false;
+    initial.providers.modal_hibou.ready = false;
     fetchMock
       .mockImplementationOnce(() => response(initial))
       .mockImplementationOnce(() => response(uploaded));
@@ -35,11 +36,11 @@ describe("PathologyAI React frontend", () => {
     expect(screen.getByText("Optional local encoders never download weights at runtime and fall back to the deterministic method when unavailable.")).toBeVisible();
     expect(screen.getByText("PathologyAI")).toBeVisible();
     expect(document.body).not.toHaveTextContent("🔬");
-    expect(screen.getByRole("option", { name: "Local Hibou-B feature exploration (unavailable)" })).toBeDisabled();
+    expect(screen.getByRole("option", { name: "Hibou-B feature exploration (unavailable)" })).toBeDisabled();
 
     await user.selectOptions(screen.getByLabelText("Feature provider"), "uni");
     expect(screen.getByText("Local UNI encoder is ready")).toBeVisible();
-    expect(screen.getByText("UNI live detail")).toBeVisible();
+    expect(screen.getAllByText("UNI live detail").length).toBeGreaterThanOrEqual(2);
 
     const file = new File(["png"], "sample.png", { type: "image/png" });
     const uploadInput = screen.getByLabelText("Choose one or more files") as HTMLInputElement;

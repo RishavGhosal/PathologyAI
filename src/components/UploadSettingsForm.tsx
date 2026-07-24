@@ -39,14 +39,21 @@ export function UploadSettingsForm({
   const [useReviewModel, setUseReviewModel] = useState(active.use_review_model);
   const fileInput = useRef<HTMLInputElement>(null);
 
+  function preferredProviderKind(kind: "uni" | "hibou"): ProviderKind {
+    if (kind === "uni") return providers.uni.ready ? "uni" : providers.modal_uni.ready ? "modal_uni" : "uni";
+    return providers.hibou.ready ? "hibou" : providers.modal_hibou.ready ? "modal_hibou" : "hibou";
+  }
+
   useEffect(() => {
     const next = settings ?? DEFAULT_SETTINGS;
-    setProviderKind(next.provider_kind);
+    setProviderKind(next.provider_kind === "modal_uni" || next.provider_kind === "uni" ? preferredProviderKind("uni") : next.provider_kind === "modal_hibou" || next.provider_kind === "hibou" ? preferredProviderKind("hibou") : next.provider_kind);
     setDomainContext(next.domain_context);
     setScreeningSeconds(next.screening_seconds);
     setUseReviewModel(next.use_review_model);
     if (fileInput.current) fileInput.current.value = "";
-  }, [settings]);
+  }, [settings, providers]);
+
+  const selectedProvider = providerKind === "modal_uni" ? "uni" : providerKind === "modal_hibou" ? "hibou" : providerKind;
 
   const providerHelp = useMemo(() => {
     if (providerKind === "uni") return providers.uni;
@@ -91,21 +98,15 @@ export function UploadSettingsForm({
           <select
             id="provider-kind"
             name="provider_kind"
-            value={providerKind}
-            onChange={(event) => setProviderKind(event.target.value as ProviderKind)}
+            value={selectedProvider}
+            onChange={(event) => setProviderKind(event.target.value === "uni" || event.target.value === "hibou" ? preferredProviderKind(event.target.value) : event.target.value as ProviderKind)}
           >
             <option value="deterministic">Deterministic demonstration</option>
-            <option value="uni" disabled={!providers.uni.ready}>
-              Local UNI feature exploration{providers.uni.ready ? "" : " (unavailable)"}
+            <option value="uni" disabled={!providers.uni.ready && !providers.modal_uni.ready}>
+              UNI feature exploration{providers.uni.ready || providers.modal_uni.ready ? "" : " (unavailable)"}
             </option>
-            <option value="modal_uni" disabled={!providers.modal_uni.ready}>
-              Modal UNI GPU exploration{providers.modal_uni.ready ? "" : " (not configured)"}
-            </option>
-            <option value="hibou" disabled={!providers.hibou.ready}>
-              Local Hibou-B feature exploration{providers.hibou.ready ? "" : " (unavailable)"}
-            </option>
-            <option value="modal_hibou" disabled={!providers.modal_hibou.ready}>
-              Modal Hibou-B GPU exploration{providers.modal_hibou.ready ? "" : " (not configured)"}
+            <option value="hibou" disabled={!providers.hibou.ready && !providers.modal_hibou.ready}>
+              Hibou-B feature exploration{providers.hibou.ready || providers.modal_hibou.ready ? "" : " (unavailable)"}
             </option>
           </select>
           {providerHelp && (
