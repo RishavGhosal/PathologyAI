@@ -1,23 +1,94 @@
-export function Overview({ disclaimer }: { disclaimer: string }) {
+import type { Providers, ProviderStatus } from "../types";
+
+export function Overview({ disclaimer, providers }: { disclaimer: string; providers: Providers }) {
+  const readyCount = [providers.uni, providers.hibou, providers.modal_uni, providers.modal_hibou, providers.review_model].filter((provider) => provider.ready).length;
+
   return (
-    <div className="hero">
-      <section className="hero-copy">
-        <p className="eyebrow">Human-in-the-loop image review</p>
-        <h1>Human review, organized</h1>
-        <p className="hero-disclaimer">{disclaimer}</p>
-        <div className="workflow" aria-label="Review workflow">
-          <span className="active">1. Upload</span>
-          <span>2. Process</span>
-          <span>3. Review images</span>
-          <span>4. Export confirmed labels</span>
+    <div className="landing">
+      <div className="hero">
+        <section className="hero-copy">
+          <p className="eyebrow">Human-in-the-loop image review</p>
+          <h1>Human review, organized</h1>
+          <p className="hero-disclaimer">{disclaimer}</p>
+          <div className="workflow" aria-label="Review workflow">
+            <span className="active">1. Upload</span>
+            <span>2. Process</span>
+            <span>3. Review images</span>
+            <span>4. Export confirmed labels</span>
+          </div>
+        </section>
+        <MicroscopyVisual />
+      </div>
+
+      <section className="model-status panel" aria-labelledby="model-status-title">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Local model stack</p>
+            <h2 id="model-status-title">Artifacts detected on this machine</h2>
+          </div>
+          <span className="status-summary"><span className="status-dot" />{readyCount}/5 ready</span>
+        </div>
+        <p className="muted model-status-intro">
+          Local weights stay on this machine; the Modal option sends images to the configured remote GPU endpoint. Choose a provider below when you process a batch.
+        </p>
+        <div className="model-status-grid">
+          <ProviderStatusCard label="UNI" tone="cyan" provider={providers.uni} detailLabel="Feature encoder" />
+          <ProviderStatusCard label="Hibou-B" tone="violet" provider={providers.hibou} detailLabel="Pathology encoder" />
+          <ProviderStatusCard label="Modal UNI" tone="cyan" provider={providers.modal_uni} detailLabel="Remote GPU encoder" />
+          <ProviderStatusCard label="Modal Hibou-B" tone="cyan" provider={providers.modal_hibou} detailLabel="Remote GPU encoder" />
+          <ProviderStatusCard label="MHIST head" tone="amber" provider={providers.review_model} detailLabel="Review-order proxy" />
+        </div>
+        <p className="model-footnote">The experimental head uses UNI features to estimate annotator-agreement proxy patterns; it is not a diagnostic model.</p>
+      </section>
+
+      <section className="scope-strip" aria-label="Product guardrails">
+        <span className="scope-icon">◎</span>
+        <div>
+          <strong>Designed for accountable review</strong>
+          <span>Suggestions order a review queue only. They do not identify tissue, disease, cancer, or clinical urgency.</span>
+          <span>Optional local encoders never download weights at runtime and fall back to the deterministic method when unavailable.</span>
         </div>
       </section>
-      <section className="panel scope-panel">
-        <p className="eyebrow">Guardrails</p>
-        <h2>Scope and limits</h2>
-        <p>Suggestions order a review queue only. They do not identify tissue, disease, cancer, or clinical urgency.</p>
-        <p>Optional local encoders never download weights at runtime and fall back to the deterministic method when unavailable.</p>
-      </section>
     </div>
+  );
+}
+
+function ProviderStatusCard({ label, tone, provider, detailLabel }: { label: string; tone: string; provider: ProviderStatus; detailLabel: string }) {
+  return (
+    <article className={`model-card ${tone} ${provider.ready ? "ready" : "unavailable"}`}>
+      <div className="model-card-top"><span className="model-mark">{label === "MHIST head" ? "↗" : "✦"}</span><span className="model-label">{label}</span><span className="model-ready">{provider.ready ? "Ready" : "Unavailable"}</span></div>
+      <strong>{provider.ready ? (label.startsWith("Modal") ? "Remote endpoint configured" : "Artifact detected locally") : provider.summary}</strong>
+      <span className="model-detail-label">{detailLabel}</span>
+      <p>{provider.ready ? (label.startsWith("Modal") ? "Ready for remote exploratory GPU inference." : "Ready for local exploratory inference.") : provider.detail}</p>
+    </article>
+  );
+}
+
+function MicroscopyVisual() {
+  return (
+    <section className="micrograph-card" aria-label="Illustration of a local microscopy review pipeline">
+      <div className="micrograph-heading"><span className="eyebrow">Visual pipeline</span><span className="local-pill"><span className="status-dot" />Local only</span></div>
+      <div className="micrograph-stage">
+        <svg viewBox="0 0 560 360" role="img" aria-label="Abstract microscopy tiles with a feature map overlay">
+          <defs>
+            <linearGradient id="micro-bg" x1="0" x2="1" y1="0" y2="1"><stop stopColor="#172536" /><stop offset="1" stopColor="#0b111a" /></linearGradient>
+            <radialGradient id="cell-blue"><stop stopColor="#91e9f4" stopOpacity=".8" /><stop offset="1" stopColor="#2d6c86" stopOpacity=".08" /></radialGradient>
+            <radialGradient id="cell-pink"><stop stopColor="#f6a6c3" stopOpacity=".78" /><stop offset="1" stopColor="#ad4f83" stopOpacity=".08" /></radialGradient>
+            <filter id="soft"><feGaussianBlur stdDeviation="8" /></filter>
+          </defs>
+          <rect width="560" height="360" rx="18" fill="url(#micro-bg)" />
+          <g opacity=".34" filter="url(#soft)"><circle cx="104" cy="106" r="70" fill="url(#cell-blue)" /><circle cx="220" cy="218" r="90" fill="url(#cell-pink)" /><circle cx="420" cy="120" r="92" fill="#6d8df5" /></g>
+          <g fill="none" stroke="#8ed9df" strokeOpacity=".38" strokeWidth="2"><path d="M22 82C72 35 112 64 138 101s70 19 80-26" /><path d="M39 269c48-50 80-27 112 8s79 20 99-22" /><path d="M294 72c36 30 67 28 102-4s70-23 137 25" /><path d="M314 285c44-49 79-42 110 0s72 35 108-4" /></g>
+          <g fill="none" stroke="#f6a6c3" strokeOpacity=".5" strokeWidth="1.5"><ellipse cx="95" cy="118" rx="42" ry="28" transform="rotate(-18 95 118)" /><ellipse cx="186" cy="245" rx="55" ry="36" transform="rotate(22 186 245)" /><ellipse cx="406" cy="124" rx="48" ry="29" transform="rotate(-12 406 124)" /><ellipse cx="481" cy="264" rx="54" ry="34" transform="rotate(18 481 264)" /></g>
+          <g fill="#faca2b"><circle cx="126" cy="91" r="4" /><circle cx="164" cy="225" r="3" /><circle cx="375" cy="151" r="4" /><circle cx="448" cy="91" r="3" /><circle cx="477" cy="235" r="4" /></g>
+          <rect x="330" y="194" width="168" height="102" rx="12" fill="#071218" fillOpacity=".68" stroke="#00c0f2" strokeOpacity=".62" />
+          <path d="M346 269c18-41 29-27 42-48 14-23 25 18 40-2 17-23 29-11 53-28" fill="none" stroke="#00c0f2" strokeWidth="3" strokeLinecap="round" />
+          <path d="M346 278h120" stroke="#00c0f2" strokeOpacity=".25" /><path d="M346 216v66M376 216v66M406 216v66M436 216v66M466 216v66" stroke="#00c0f2" strokeOpacity=".12" />
+          <text x="348" y="214" fill="#b6f3df" fontFamily="system-ui" fontSize="11" fontWeight="700" letterSpacing="1.2">FEATURE MAP</text>
+          <text x="26" y="330" fill="#aab4c4" fontFamily="system-ui" fontSize="12">image quality</text><text x="176" y="330" fill="#aab4c4" fontFamily="system-ui" fontSize="12">local features</text><text x="332" y="330" fill="#aab4c4" fontFamily="system-ui" fontSize="12">review order</text>
+        </svg>
+      </div>
+      <p className="micrograph-caption">A visual summary of the flow: inspect the image, extract local features, then surface the next human review.</p>
+    </section>
   );
 }

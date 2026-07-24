@@ -110,7 +110,7 @@ export default function App() {
       <Header onReset={handleReset} />
       {toast && <div className="toast-region"><Toast {...toast} /></div>}
       <main className="app-main">
-        {!workspace.batch && <Overview disclaimer={workspace.disclaimer} />}
+        {!workspace.batch && <Overview disclaimer={workspace.disclaimer} providers={workspace.providers} />}
         <UploadSettingsForm providers={workspace.providers} settings={workspace.settings} busy={uploading} onSubmit={handleUpload} />
         {workspace.batch && (
           <>

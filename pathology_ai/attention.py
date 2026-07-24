@@ -196,4 +196,13 @@ def get_attention_provider(
                 return LocalHibouFeatureProvider(status.model_dir)
         except Exception:
             pass
+    if selected in {"modal_uni", "modal_hibou"}:
+        try:
+            from .modal_provider import ModalFeatureProvider, get_modal_provider_status
+
+            remote_kind = "uni" if selected == "modal_uni" else "hibou"
+            if get_modal_provider_status(remote_kind).ready:
+                return ModalFeatureProvider(remote_kind)
+        except Exception:
+            pass
     return DeterministicDemoAttentionProvider()
