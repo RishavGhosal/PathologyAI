@@ -152,10 +152,23 @@ class StandaloneAppTests(unittest.TestCase):
         record = created["batch"]["records"][0]
         self.assertEqual(record["name"], "sample.png")
         self.assertEqual(record["attention"]["provider_name"], "Deterministic demonstration attention")
+        self.assertIn("computed", record)
+        self.assertGreaterEqual(len(record["computed"]["regions"]), 1)
         for kind in ("original", "overlay", "heatmap"):
             with self.opener.open(self.url + record["images"][kind]) as response:
                 self.assertEqual(response.headers["Content-Type"], "image/png")
                 self.assertTrue(response.read().startswith(b"\x89PNG"))
+
+        captions = self.request_json(f"/api/images/{record['id']}/region-captions")
+        self.assertEqual(captions["image_id"], record["id"])
+        self.assertEqual(len(captions["regions"]), len(record["computed"]["regions"]))
+        for region in captions["regions"]:
+            self.assertEqual(set(region["caption"]), {"priority_reason", "visual_description", "workflow_guidance", "fallback_triggered"})
+            self.assertTrue(region["caption"]["fallback_triggered"])
+            self.assertIsNone(region["caption"]["visual_description"])
+            self.assertIsNone(region["caption"]["workflow_guidance"])
+        cached = self.request_json(f"/api/images/{record['id']}/region-captions")
+        self.assertEqual(captions, cached)
 
         settings = self.request_json(
             "/api/settings",

@@ -1200,15 +1200,24 @@ main,
 
 .viewer,
 .image-viewer {
-  display: grid;
+  display: flex;
   min-height: 330px;
-  place-items: center;
+  align-items: center;
+  justify-content: center;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: #07090d;
   scrollbar-color: var(--line) transparent;
   scrollbar-width: thin;
+  position: relative;
+}
+
+.viewer-canvas {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
 }
 
 .viewer img,
@@ -1219,6 +1228,29 @@ main,
   max-width: 100%;
   margin: auto;
   animation: image-in 160ms ease-out both;
+}
+
+.region-marker {
+  position: absolute;
+  display: grid;
+  place-items: start;
+  min-width: 22px;
+  min-height: 22px;
+  border: 2px solid #f4c95d;
+  border-radius: 5px;
+  background: rgba(244, 201, 93, 0.12);
+  box-shadow: 0 0 0 1px rgba(8, 12, 18, 0.65);
+  pointer-events: none;
+}
+
+.region-marker b {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  color: #091016;
+  background: #f4c95d;
+  font-size: 0.72rem;
 }
 
 @keyframes image-in {
@@ -1255,6 +1287,69 @@ main,
 
 .viewer-caption {
   min-height: 2.2em;
+}
+
+.region-captions,
+.workflow-guidance,
+.batch-summaries {
+  margin-top: 0.95rem;
+  padding: 0.78rem;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(16, 23, 34, 0.72);
+}
+
+.region-captions h3,
+.workflow-guidance h3,
+.batch-summaries h3 {
+  margin: 0 0 0.62rem;
+}
+
+.region-caption-card {
+  padding: 0.62rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.region-caption-card:first-of-type {
+  border-top: 0;
+}
+
+.region-caption-heading,
+.summary-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.region-caption-heading span,
+.summary-row span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.region-caption-card p,
+.workflow-guidance p {
+  margin: 0.38rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.inline-error {
+  color: #ffb0a6;
+  font-size: 0.8rem;
+}
+
+.summary-list {
+  display: grid;
+  gap: 0.48rem;
+}
+
+.summary-row {
+  padding: 0.55rem;
+  border-radius: 7px;
+  background: var(--surface-2);
 }
 
 .facts,

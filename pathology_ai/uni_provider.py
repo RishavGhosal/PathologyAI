@@ -18,6 +18,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 from .attention import AttentionResult, DeterministicDemoAttentionProvider
+from .regions import analyze_variation_map
 
 
 UNI_PROVIDER_NAME = "Local UNI feature-variation demonstration"
@@ -159,7 +160,7 @@ def _render_feature_overlay(
     image: Image.Image,
     patch_scores: np.ndarray,
     content_box: tuple[int, int, int, int],
-) -> tuple[Image.Image, Image.Image, str]:
+) -> tuple[Image.Image, Image.Image, str, np.ndarray]:
     preview = image.convert("RGB").copy()
     if max(preview.size) > 1200:
         preview.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
@@ -204,7 +205,7 @@ def _render_feature_overlay(
     overlay = Image.fromarray(
         np.uint8(np.clip(overlay_rgb * 255.0, 0, 255)), mode="RGB"
     )
-    return overlay, heatmap, region
+    return overlay, heatmap, region, salience
 
 
 class LocalUNIFeatureProvider:
@@ -249,8 +250,12 @@ class LocalUNIFeatureProvider:
         if not bool(torch.isfinite(embedding_tensor).all()):
             raise RuntimeError("UNI returned a non-finite global embedding.")
         embedding = tuple(float(value) for value in embedding_tensor[0].tolist())
-        overlay, heatmap, region = _render_feature_overlay(
+        overlay, heatmap, region, variation_map = _render_feature_overlay(
             image, patch_scores, content_box
+        )
+        region_analysis = analyze_variation_map(
+            variation_map,
+            source="uni_feature_variation",
         )
 
         # Review priority deliberately stays on the existing deterministic rule.
@@ -277,4 +282,6 @@ class LocalUNIFeatureProvider:
             ),
             embedding=embedding,
             embedding_model=UNI_MODEL_ID,
+            variation_map=variation_map,
+            image_priority_score=region_analysis.image_priority_score,
         )

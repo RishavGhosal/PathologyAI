@@ -13,5 +13,9 @@ export function compareQueueRecords(left: ImageRecord, right: ImageRecord): numb
   const rightScore = right.triage.review_first_score ?? -1;
   if (leftScore !== rightScore) return rightScore - leftScore;
 
+  const leftFeatureScore = left.computed?.priority_score ?? -1;
+  const rightFeatureScore = right.computed?.priority_score ?? -1;
+  if (leftFeatureScore !== rightFeatureScore) return rightFeatureScore - leftFeatureScore;
+
   return left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
 }

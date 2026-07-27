@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { DataTable, MetricsCards, PriorityChip, TextList } from "./common";
-import { PRIORITIES, type BatchState, type ImageRecord, type ImageView, type Priority, type ReviewFilter, type ReviewPayload } from "../types";
+import { workspaceApi } from "../api";
+import { PRIORITIES, type BatchState, type CaptionOutput, type ImageRecord, type ImageView, type Priority, type RegionCaption, type RegionCaptionsResponse, type ReviewFilter, type ReviewPayload } from "../types";
 import { compareQueueRecords, effectivePriority } from "../queue";
 
 export function QueueTab({
@@ -14,6 +15,7 @@ export function QueueTab({
   onSave,
   onReopen,
   onApplyGroup,
+  disclaimer,
 }: {
   batch: BatchState;
   selectedId: string | null;
@@ -25,6 +27,7 @@ export function QueueTab({
   onSave: (id: string, payload: ReviewPayload) => Promise<void>;
   onReopen: (id: string) => Promise<void>;
   onApplyGroup: (id: string, groupId: string) => Promise<void>;
+  disclaimer: string;
 }) {
   const visible = useMemo(
     () => batch.records.filter((record) => {
@@ -85,6 +88,7 @@ export function QueueTab({
               onSave={onSave}
               onReopen={onReopen}
               onApplyGroup={onApplyGroup}
+              disclaimer={disclaimer}
             />
           ) : <div className="empty"><strong>No image selected</strong><span>Choose a record to begin human review.</span></div>}
         </div>
@@ -101,6 +105,7 @@ function RecordDetail({
   onSave,
   onReopen,
   onApplyGroup,
+  disclaimer,
 }: {
   record: ImageRecord;
   records: ImageRecord[];
@@ -108,12 +113,32 @@ function RecordDetail({
   onSave: (id: string, payload: ReviewPayload) => Promise<void>;
   onReopen: (id: string) => Promise<void>;
   onApplyGroup: (id: string, groupId: string) => Promise<void>;
+  disclaimer: string;
 }) {
   const [view, setView] = useState<ImageView>("original");
+  const [captions, setCaptions] = useState<RegionCaptionsResponse | null>(null);
+  const [captionLoading, setCaptionLoading] = useState(false);
+  const [captionError, setCaptionError] = useState<string | null>(null);
   useEffect(() => setView("original"), [record.id]);
+  useEffect(() => {
+    setCaptions(null);
+    setCaptionError(null);
+  }, [record.id]);
+  useEffect(() => {
+    if (view !== "overlay" || captions) return;
+    let active = true;
+    setCaptionLoading(true);
+    workspaceApi.regionCaptions(record.id)
+      .then((value) => active && setCaptions(value))
+      .catch((reason: unknown) => active && setCaptionError(reason instanceof Error ? reason.message : "Caption request failed"))
+      .finally(() => active && setCaptionLoading(false));
+    return () => { active = false; };
+  }, [captions, record.id, view]);
   const caption = view === "original"
     ? "Original image for human review."
     : view === "overlay" ? record.attention.overlay_caption : record.attention.explanation;
+  const regions = captions?.regions ?? [];
+  const guidance = uniqueGuidance(regions.map((region) => region.caption));
 
   return (
     <article className="record-detail">
@@ -125,7 +150,21 @@ function RecordDetail({
       </div>
       <div className="detail-grid">
         <div>
-          <div className="viewer"><img src={record.images[view]} alt={`${view} image preview for ${record.name}`} /></div>
+          <div className="viewer">
+            <div className="viewer-canvas">
+              <img src={record.images[view]} alt={`${view} image preview for ${record.name}`} />
+              {view === "overlay" && (captions?.regions ?? record.computed?.regions ?? []).map((region) => (
+                <span
+                  className="region-marker"
+                  key={region.region_id}
+                  style={{ left: `${region.x * 100}%`, top: `${region.y * 100}%`, width: `${region.width * 100}%`, height: `${region.height * 100}%` }}
+                  title={`Region ${region.region_id}: ${region.location}, ${region.contribution_percentage.toFixed(0)}% of priority score`}
+                >
+                  <b>{region.region_id}</b>
+                </span>
+              ))}
+            </div>
+          </div>
           <div className="viewer-tools" role="group" aria-label="Image view">
             {(["original", "overlay", "heatmap"] as ImageView[]).map((kind) => (
               <button className={view === kind ? "active" : ""} key={kind} type="button" aria-pressed={view === kind} onClick={() => setView(kind)}>
@@ -134,11 +173,27 @@ function RecordDetail({
             ))}
           </div>
           <p className="viewer-caption">{caption}</p>
+          {view === "overlay" && captionLoading && <p className="muted">Computing region captions…</p>}
+          {view === "overlay" && captionError && <p className="inline-error">{captionError}</p>}
+          {view === "overlay" && regions.length > 0 && (
+            <section className="region-captions" aria-label="Computed region captions">
+              <h3>Highlighted regions</h3>
+              {regions.map((region) => <RegionCaptionCard key={region.region_id} region={region} disclaimer={disclaimer} />)}
+            </section>
+          )}
+          {view === "overlay" && guidance.length > 0 && (
+            <section className="workflow-guidance" aria-label="Workflow guidance">
+              <h3>Workflow guidance</h3>
+              {guidance.map((value) => <p key={value}>{appendDisclaimer(value, disclaimer)}</p>)}
+            </section>
+          )}
           <div className="facts">
             <div className="fact"><small>Suggested priority</small><PriorityChip priority={record.triage.suggested_priority} /></div>
             <div className="fact"><small>Review method</small><span>{record.triage.priority_source}</span></div>
             <div className="fact"><small>Image</small><span>{record.dimensions.join(" × ")} px · {record.size}</span></div>
             <div className="fact"><small>Quality</small><span>{record.quality.adequate ? "Passed" : "Needs attention"}</span></div>
+            <div className="fact"><small>Feature priority score</small><span>{record.computed ? record.computed.priority_score.toFixed(2) : "Unavailable"}</span></div>
+            <div className="fact"><small>UNI/Hibou-B agreement</small><span>{formatAgreement(record.computed?.model_agreement_score ?? null)}</span></div>
           </div>
           <section className="findings"><h3>Quality checks</h3><TextList values={record.quality.reasons} empty="No blocking quality issues." /></section>
           <section className="findings"><h3>Advisories</h3><TextList values={record.quality.advisories} empty="No nonblocking advisories." /></section>
@@ -148,6 +203,33 @@ function RecordDetail({
       </div>
     </article>
   );
+}
+
+function RegionCaptionCard({ region, disclaimer }: { region: RegionCaption; disclaimer: string }) {
+  const caption = region.caption;
+  const text = caption.fallback_triggered
+    ? caption.priority_reason
+    : [caption.priority_reason, caption.visual_description].filter(Boolean).join(" ");
+  return (
+    <article className="region-caption-card">
+      <div className="region-caption-heading"><strong>Region {region.region_id}</strong><span>{region.location} · {region.contribution_percentage.toFixed(0)}%</span></div>
+      <p>{appendDisclaimer(text, disclaimer)}</p>
+    </article>
+  );
+}
+
+function uniqueGuidance(captions: CaptionOutput[]) {
+  return Array.from(new Set(captions
+    .filter((caption) => !caption.fallback_triggered && caption.workflow_guidance)
+    .map((caption) => caption.workflow_guidance as string)));
+}
+
+function appendDisclaimer(value: string, disclaimer: string) {
+  return `${value} ${disclaimer}`;
+}
+
+function formatAgreement(value: number | null) {
+  return value == null ? "Unavailable" : value.toFixed(2);
 }
 
 function ReviewForm({ record, records, onSelect, onSave, onReopen, onApplyGroup }: {

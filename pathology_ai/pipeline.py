@@ -236,9 +236,16 @@ def _process_image_bytes(
                     f"deterministic review-priority fallback was used ({type(exc).__name__})."
                 )
                 fallback_reason = f"experimental_head_error:{type(exc).__name__}"
+    # The existing complexity signal remains part of the rule.  The computed
+    # feature-variation peak strengthens it without changing the quality gate
+    # or the exact review-order labels.
+    priority_signal = max(
+        float(attention.visual_complexity_score),
+        float(attention.image_priority_score or 0.0),
+    )
     triage = assign_review_priority(
         quality,
-        attention.visual_complexity_score,
+        priority_signal,
         attention.priority_score_source if prediction is None else prediction.source,
         experimental_priority=None if prediction is None else prediction.priority,
         review_first_score=None if prediction is None else prediction.review_first_score,

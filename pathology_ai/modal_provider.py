@@ -131,6 +131,11 @@ class ModalFeatureProvider:
             overlay_caption=str(result.get("overlay_caption", "Exploratory remote feature-variation overlay; not diagnostic.")),
             embedding=embedding,
             embedding_model=result.get("embedding_model"),
+            image_priority_score=(
+                float(result["image_priority_score"])
+                if result.get("image_priority_score") is not None
+                else None
+            ),
         )
 
 

@@ -143,6 +143,7 @@ export default function App() {
                   onSave={handleReview}
                   onReopen={handleReopen}
                   onApplyGroup={handleApplyGroup}
+                  disclaimer={workspace.disclaimer}
                 />
               )}
               {activeTab === "dashboard" && <DashboardTab batch={workspace.batch} />}

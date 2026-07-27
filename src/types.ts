@@ -73,6 +73,47 @@ export interface AttentionState {
   embedding_available: boolean;
 }
 
+export interface FeatureRegion {
+  region_id: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  peak_intensity: number;
+  mean_intensity: number;
+  area_fraction: number;
+  contribution_percentage: number;
+  location: string;
+}
+
+export interface ComputedFeatures {
+  regions: FeatureRegion[];
+  priority_score: number;
+  summary: string;
+  source: string;
+  model_agreement_score: number | null;
+  model_agreement_available: boolean;
+  model_agreement_method: string | null;
+  quality_signal: Record<string, number>;
+}
+
+export interface CaptionOutput {
+  priority_reason: string;
+  visual_description: string | null;
+  workflow_guidance: string | null;
+  fallback_triggered: boolean;
+}
+
+export interface RegionCaption extends FeatureRegion {
+  caption: CaptionOutput;
+}
+
+export interface RegionCaptionsResponse {
+  image_id: string;
+  computed: ComputedFeatures;
+  regions: RegionCaption[];
+}
+
 export interface ImageRecord {
   id: string;
   name: string;
@@ -83,6 +124,7 @@ export interface ImageRecord {
   quality: QualityState;
   triage: TriageState;
   attention: AttentionState;
+  computed?: ComputedFeatures;
   metadata_notes: string[];
   review: ReviewState;
   images: Record<ImageView, string>;

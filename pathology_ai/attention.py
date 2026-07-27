@@ -13,6 +13,8 @@ from typing import Protocol
 import numpy as np
 from PIL import Image, ImageFilter
 
+from .regions import analyze_variation_map
+
 
 DEMO_PROVIDER_NAME = "Deterministic demonstration attention"
 
@@ -30,6 +32,8 @@ class AttentionResult:
     overlay_caption: str = "Deterministic visual-salience demonstration overlay."
     embedding: tuple[float, ...] | None = None
     embedding_model: str | None = None
+    variation_map: np.ndarray | None = None
+    image_priority_score: float | None = None
 
 
 class AttentionProvider(Protocol):
@@ -99,6 +103,10 @@ class DeterministicDemoAttentionProvider:
         ).filter(ImageFilter.GaussianBlur(radius=max(1.0, min(preview.size) / 300.0)))
         salience = np.asarray(salience_image, dtype=np.float32) / 255.0
         salience = _normalized(salience)
+        region_analysis = analyze_variation_map(
+            salience,
+            source="deterministic_feature_variation",
+        )
 
         # A compact black-red-yellow-white map without matplotlib.
         heat_rgb = np.stack(
@@ -163,6 +171,8 @@ class DeterministicDemoAttentionProvider:
                 "Deterministic demonstration overlay based on edges, contrast, and "
                 "color variation."
             ),
+            variation_map=salience,
+            image_priority_score=region_analysis.image_priority_score,
         )
 
 

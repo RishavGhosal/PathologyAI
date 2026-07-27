@@ -21,6 +21,7 @@ from uuid import uuid4
 import webbrowser
 
 from pathology_ai.attention import get_attention_provider
+from pathology_ai.captions import CaptionInput, VisionCaptionService
 from pathology_ai.dashboard_metrics import (
     DEFAULT_SCREENING_SECONDS_PER_IMAGE,
     MHIST_LIKE_DOMAIN,
@@ -30,6 +31,13 @@ from pathology_ai.dashboard_metrics import (
 from pathology_ai.hibou_provider import get_hibou_provider_status
 from pathology_ai.modal_provider import get_modal_provider_status
 from pathology_ai.pipeline import BatchResult, UploadPayload, format_file_size, process_uploads
+from pathology_ai.regions import (
+    RegionAnalysis,
+    analyze_variation_map,
+    rank_agreement,
+    resize_map,
+    variation_map_from_heatmap,
+)
 from pathology_ai.review_export import build_review_export_csv, validate_optional_group_id, validate_review_fields
 from pathology_ai.review_model import get_review_model, get_review_model_status
 from pathology_ai.triage import PRIORITIES, priority_sort_key
@@ -82,6 +90,9 @@ class Workspace:
     screening_seconds: float = DEFAULT_SCREENING_SECONDS_PER_IMAGE
     provider_kind: str = field(default_factory=lambda: _preferred_provider_kind())
     use_review_model: bool = False
+    computed_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    caption_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    model_map_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 SESSIONS: dict[str, Workspace] = {}
@@ -166,7 +177,142 @@ def _providers() -> dict[str, Any]:
     }
 
 
-def _record_json(record: Any, review: dict[str, Any]) -> dict[str, Any]:
+def _provider_for_agreement(kind: str) -> Any | None:
+    """Return a configured second encoder without silently using a fallback."""
+
+    if kind == "uni":
+        status = get_uni_provider_status()
+        if status.ready:
+            return get_attention_provider(provider_kind="uni")
+        modal = get_modal_provider_status("uni")
+        if modal.ready:
+            from pathology_ai.modal_provider import ModalFeatureProvider
+
+            return ModalFeatureProvider("uni")
+    if kind == "hibou":
+        status = get_hibou_provider_status()
+        if status.ready:
+            return get_attention_provider(provider_kind="hibou")
+        modal = get_modal_provider_status("hibou")
+        if modal.ready:
+            from pathology_ai.modal_provider import ModalFeatureProvider
+
+            return ModalFeatureProvider("hibou")
+    return None
+
+
+def _model_kind(model_name: str | None) -> str | None:
+    lowered = (model_name or "").lower()
+    if "uni" in lowered:
+        return "uni"
+    if "hibou" in lowered:
+        return "hibou"
+    return None
+
+
+def _computed_features(space: Workspace, record: Any) -> dict[str, Any]:
+    cached = space.computed_cache.get(record.image_id)
+    if cached is not None:
+        return cached
+
+    attention = record.attention
+    primary_map = attention.variation_map
+    if primary_map is None:
+        primary_map = variation_map_from_heatmap(attention.heatmap)
+    primary_map = primary_map.astype("float32", copy=False)
+    primary_kind = _model_kind(attention.embedding_model)
+    maps = space.model_map_cache.setdefault(record.image_id, {})
+    if primary_kind:
+        maps[primary_kind] = primary_map
+    analysis: RegionAnalysis = analyze_variation_map(
+        primary_map,
+        source=getattr(attention, "embedding_model", None) or "feature_variation",
+    )
+
+    model_agreement_score: float | None = None
+    model_agreement_method: str | None = None
+    if primary_kind in {"uni", "hibou"}:
+        other_kind = "hibou" if primary_kind == "uni" else "uni"
+        if other_kind not in maps:
+            try:
+                provider = _provider_for_agreement(other_kind)
+                if provider is not None:
+                    other = provider.analyze(record.image)
+                    other_map = other.variation_map
+                    if other_map is None:
+                        other_map = variation_map_from_heatmap(other.heatmap)
+                    maps[other_kind] = other_map.astype("float32", copy=False)
+            except Exception:
+                maps.pop(other_kind, None)
+        if other_kind in maps:
+            common_shape = (
+                max(8, min(primary_map.shape[0], maps[other_kind].shape[0])),
+                max(8, min(primary_map.shape[1], maps[other_kind].shape[1])),
+            )
+            model_agreement_score = rank_agreement(
+                resize_map(primary_map, common_shape),
+                resize_map(maps[other_kind], common_shape),
+            )
+            model_agreement_method = "Shared-grid feature-variation rank agreement"
+
+    quality_signal = {
+        key: float(record.quality.metrics[key])
+        for key in ("blur_score", "contrast")
+        if key in record.quality.metrics
+    }
+    result = {
+        "regions": [region.as_json() for region in analysis.regions],
+        "priority_score": round(float(analysis.image_priority_score), 6),
+        "summary": analysis.summary,
+        "source": analysis.source,
+        "model_agreement_score": None if model_agreement_score is None else round(float(model_agreement_score), 6),
+        "model_agreement_available": model_agreement_score is not None,
+        "model_agreement_method": model_agreement_method,
+        "quality_signal": quality_signal,
+    }
+    space.computed_cache[record.image_id] = result
+    return result
+
+
+def _crop_region(image: Any, region: Mapping[str, Any]) -> Any:
+    width, height = image.size
+    left = max(0, min(width - 1, int(float(region["x"]) * width)))
+    top = max(0, min(height - 1, int(float(region["y"]) * height)))
+    right = max(left + 1, min(width, int((float(region["x"]) + float(region["width"])) * width)))
+    bottom = max(top + 1, min(height, int((float(region["y"]) + float(region["height"])) * height)))
+    return image.crop((left, top, right, bottom))
+
+
+def _region_captions(space: Workspace, record: Any) -> dict[str, Any]:
+    cached = space.caption_cache.get(record.image_id)
+    if cached is not None:
+        return cached
+    computed = _computed_features(space, record)
+    service = VisionCaptionService()
+    rendered_regions: list[dict[str, Any]] = []
+    for region in computed["regions"]:
+        inputs = CaptionInput(
+            region_id=int(region["region_id"]),
+            contribution_percentage=float(region["contribution_percentage"]),
+            priority_score=float(computed["priority_score"]),
+            model_agreement_score=computed["model_agreement_score"],
+            quality_signal=computed["quality_signal"],
+            location=str(region["location"]),
+        )
+        rendered_regions.append({
+            **region,
+            "caption": service.generate(_crop_region(record.image, region), inputs),
+        })
+    result = {
+        "image_id": record.image_id,
+        "computed": computed,
+        "regions": rendered_regions,
+    }
+    space.caption_cache[record.image_id] = result
+    return result
+
+
+def _record_json(space: Workspace, record: Any, review: dict[str, Any]) -> dict[str, Any]:
     quality, triage, attention = record.quality, record.triage, record.attention
     return {
         "id": record.image_id,
@@ -178,6 +324,7 @@ def _record_json(record: Any, review: dict[str, Any]) -> dict[str, Any]:
         "quality": {"adequate": quality.adequate, "reasons": quality.reasons, "advisories": quality.advisories, "metrics": quality.metrics, "issue_codes": quality.issue_codes, "advisory_codes": quality.advisory_codes},
         "triage": {"suggested_priority": triage.suggested_priority, "explanation": triage.explanation, "priority_source": triage.priority_source, "priority_method": triage.priority_method, "review_first_score": triage.review_first_score, "fallback_reason": triage.fallback_reason},
         "attention": {"provider_name": attention.provider_name, "explanation": attention.explanation, "overlay_caption": attention.overlay_caption, "embedding_model": attention.embedding_model, "embedding_available": attention.embedding is not None},
+        "computed": _computed_features(space, record),
         "metadata_notes": record.metadata_notes,
         "review": review,
         "images": {kind: f"/api/images/{record.image_id}/{kind}" for kind in ("original", "overlay", "heatmap")},
@@ -200,7 +347,7 @@ def _workspace_json(space: Workspace) -> dict[str, Any]:
         "settings": {"domain_context": space.domain_context, "screening_seconds": space.screening_seconds, "provider_kind": space.provider_kind, "use_review_model": space.use_review_model},
         "batch": {
             "uploaded_count": batch.uploaded_count,
-            "records": [_record_json(record, space.reviews[record.image_id]) for record in batch.records],
+            "records": [_record_json(space, record, space.reviews[record.image_id]) for record in batch.records],
             "skipped": [asdict(item) for item in batch.skipped],
             "metrics": asdict(metrics),
         },
@@ -298,6 +445,11 @@ class AppHandler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 with LOCK:
                     self._json(_workspace_json(space), session=session)
+            elif path.startswith("/api/images/") and path.endswith("/region-captions"):
+                image_id = path.split("/")[3]
+                record = self._record(space, image_id)
+                with LOCK:
+                    self._json(_region_captions(space, record), session=session)
             elif path.startswith("/api/images/"):
                 _, _, _, image_id, kind = path.split("/", 4)
                 record = self._record(space, image_id)
@@ -354,6 +506,9 @@ class AppHandler(BaseHTTPRequestHandler):
                     provider = get_attention_provider(provider_kind=kind)
                 space.batch = process_uploads(files, provider, get_review_model() if use_head else None)
                 space.reviews = {record.image_id: _review_defaults(record) for record in space.batch.records}
+                space.computed_cache.clear()
+                space.caption_cache.clear()
+                space.model_map_cache.clear()
                 space.provider_kind, space.use_review_model = kind, requested_head and (use_head or remote_kind == "uni")
                 space.domain_context = fields.get("domain_context", "unknown_or_other") if fields.get("domain_context") in DOMAIN_VALUES.values() else "unknown_or_other"
                 space.screening_seconds = max(0.0, min(600.0, float(fields.get("screening_seconds", DEFAULT_SCREENING_SECONDS_PER_IMAGE))))
@@ -388,6 +543,9 @@ class AppHandler(BaseHTTPRequestHandler):
             elif path == "/api/reset":
                 space.batch = None
                 space.reviews.clear()
+                space.computed_cache.clear()
+                space.caption_cache.clear()
+                space.model_map_cache.clear()
                 space.domain_context = "unknown_or_other"
                 space.screening_seconds = DEFAULT_SCREENING_SECONDS_PER_IMAGE
                 space.provider_kind = _preferred_provider_kind()

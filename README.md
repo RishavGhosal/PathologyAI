@@ -370,6 +370,24 @@ valid PNG/JPG, an unsupported file (directly or inside a ZIP), a corrupted
 image, a blurry or very small image, a mixed valid/invalid ZIP, and a ZIP with
 no supported images.
 
+## Optional GitHub Models captions
+
+The region-caption service uses GitHub Models when `GITHUB_TOKEN` is set. Create
+a fine-grained GitHub token with the account-level `Models: Read` permission,
+then set the token in the environment where the local server runs. GitHub
+Models uses an OpenAI-compatible endpoint and defaults to `openai/gpt-4.1`:
+
+```powershell
+$env:GITHUB_TOKEN = "github_pat_your_token_here"
+$env:PATHOLOGYAI_CAPTION_MODEL = "openai/gpt-4.1"
+python app.py
+```
+
+The token is read only by the backend and is never sent to the browser. If
+`GITHUB_TOKEN` is absent, the service retains the existing `OPENAI_API_KEY`
+configuration; if neither token is configured, captions use the deterministic
+safe fallback.
+
 ## Experimental MHIST training workflow
 
 MHIST can be used for a limited experiment in which seven-pathologist agreement

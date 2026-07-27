@@ -1,5 +1,6 @@
 import type { BatchState } from "../types";
 import { DataTable, MetricsCards, PriorityChip } from "./common";
+import { effectivePriority } from "../queue";
 
 export function DashboardTab({ batch }: { batch: BatchState }) {
   const metrics = batch.metrics;
@@ -8,6 +9,22 @@ export function DashboardTab({ batch }: { batch: BatchState }) {
       <p className="eyebrow">Batch operations</p>
       <h2>Operational dashboard</h2>
       <MetricsCards metrics={metrics} />
+      <section className="batch-summaries" aria-label="Computed batch summaries">
+        <h3>Computed summaries for high-priority images</h3>
+        {batch.records.filter((record) => effectivePriority(record) !== "Lower Priority").length ? (
+          <div className="summary-list">
+            {batch.records
+              .filter((record) => effectivePriority(record) !== "Lower Priority")
+              .map((record) => (
+                <div className="summary-row" key={record.id}>
+                  <PriorityChip priority={effectivePriority(record)} />
+                  <strong>{record.name}</strong>
+                  <span>{record.computed?.summary ?? "Computed region summary unavailable."}</span>
+                </div>
+              ))}
+          </div>
+        ) : <p className="empty compact">No high-priority images in this batch.</p>}
+      </section>
       <div className="dashboard-grid">
         <section>
           <h3>Effective review priorities</h3>

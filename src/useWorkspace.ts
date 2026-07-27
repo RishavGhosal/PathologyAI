@@ -57,6 +57,7 @@ export function useWorkspace() {
     reopenReview: (id: string) => mutate(() => workspaceApi.reopenReview(id)),
     applyGroup: (id: string, groupId: string) =>
       mutate(() => workspaceApi.applyGroup(id, groupId)),
+    regionCaptions: (id: string) => workspaceApi.regionCaptions(id),
     reset: () => mutate(workspaceApi.reset),
   };
 }

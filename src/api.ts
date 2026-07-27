@@ -2,6 +2,7 @@ import type {
   DomainContext,
   ProviderKind,
   ReviewPayload,
+  RegionCaptionsResponse,
   WorkspaceSnapshot,
 } from "./types";
 
@@ -12,6 +13,15 @@ async function workspaceRequest(path: string, init?: RequestInit): Promise<Works
     throw new Error("error" in payload && payload.error ? payload.error : "Request failed");
   }
   return payload as WorkspaceSnapshot;
+}
+
+async function regionCaptionRequest(path: string): Promise<RegionCaptionsResponse> {
+  const response = await fetch(path);
+  const payload = (await response.json()) as RegionCaptionsResponse | { error?: string };
+  if (!response.ok) {
+    throw new Error("error" in payload && payload.error ? payload.error : "Request failed");
+  }
+  return payload as RegionCaptionsResponse;
 }
 
 function postJson(path: string, body: object): Promise<WorkspaceSnapshot> {
@@ -52,4 +62,5 @@ export const workspaceApi = {
   applyGroup: (id: string, groupId: string) =>
     postJson(`/api/groups/${id}`, { group_id: groupId }),
   reset: () => postJson("/api/reset", {}),
+  regionCaptions: (id: string) => regionCaptionRequest(`/api/images/${id}/region-captions`),
 };

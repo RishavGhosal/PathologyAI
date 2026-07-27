@@ -19,6 +19,7 @@ import numpy as np
 from PIL import Image
 
 from .attention import AttentionResult, DeterministicDemoAttentionProvider
+from .regions import analyze_variation_map
 from .uni_provider import _letterbox, _render_feature_overlay
 
 
@@ -156,7 +157,11 @@ class LocalHibouFeatureProvider:
         scores = 1.0 - torch.sum(normalized * centroid, dim=1)
         patch_scores = scores.reshape(grid_side, grid_side).cpu().numpy()
         _square, content_box = _letterbox(image)
-        overlay, heatmap, region = _render_feature_overlay(image, patch_scores, content_box)
+        overlay, heatmap, region, variation_map = _render_feature_overlay(image, patch_scores, content_box)
+        region_analysis = analyze_variation_map(
+            variation_map,
+            source="hibou_b_feature_variation",
+        )
 
         demo_result = DeterministicDemoAttentionProvider().analyze(image)
         embedding = tuple(float(value) for value in embedding_tensor[0].tolist())
@@ -176,6 +181,8 @@ class LocalHibouFeatureProvider:
             overlay_caption="Exploratory local Hibou-B feature-variation overlay; not diagnostic.",
             embedding=embedding,
             embedding_model=HIBOU_MODEL_ID,
+            variation_map=variation_map,
+            image_priority_score=region_analysis.image_priority_score,
         )
 
 
