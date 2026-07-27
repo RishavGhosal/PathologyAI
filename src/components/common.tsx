@@ -2,11 +2,14 @@ import type { ReactNode } from "react";
 import type { OperationalMetrics, Priority } from "../types";
 
 export type ThemeName = "dark" | "light" | "sage";
+export type AccentName = "cyan" | "sage" | "violet";
 
-export function Header({ onReset, theme, onThemeChange }: {
+export function Header({ onReset, theme, onThemeChange, accent, onAccentChange }: {
   onReset: () => void;
   theme: ThemeName;
   onThemeChange: (theme: ThemeName) => void;
+  accent: AccentName;
+  onAccentChange: (accent: AccentName) => void;
 }) {
   return (
     <header className="site-header">
@@ -21,6 +24,14 @@ export function Header({ onReset, theme, onThemeChange }: {
             <option value="dark">Dark</option>
             <option value="light">Light</option>
             <option value="sage">Sage</option>
+          </select>
+        </label>
+        <label className="theme-control">
+          <span>Accent</span>
+          <select aria-label="Accent color" value={accent} onChange={(event) => onAccentChange(event.target.value as AccentName)}>
+            <option value="cyan">Cyan</option>
+            <option value="sage">Sage</option>
+            <option value="violet">Violet</option>
           </select>
         </label>
         <button type="button" onClick={onReset}>New batch</button>

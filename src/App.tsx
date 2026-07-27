@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Header, Toast, type ThemeName } from "./components/common";
+import { Header, Toast, type AccentName, type ThemeName } from "./components/common";
 import { DashboardTab } from "./components/DashboardTab";
 import { EvaluationTab } from "./components/EvaluationTab";
 import { Overview } from "./components/Overview";
@@ -16,6 +16,10 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeName>(() => {
     const saved = window.localStorage.getItem("pathologyai-theme");
     return saved === "light" || saved === "sage" ? saved : "dark";
+  });
+  const [accent, setAccent] = useState<AccentName>(() => {
+    const saved = window.localStorage.getItem("pathologyai-accent");
+    return saved === "sage" || saved === "violet" ? saved : "cyan";
   });
   const [activeTab, setActiveTab] = useState<TabId>("queue");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -39,6 +43,11 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("pathologyai-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.dataset.accent = accent;
+    window.localStorage.setItem("pathologyai-accent", accent);
+  }, [accent]);
 
   useEffect(() => {
     if (store.error) {
@@ -116,7 +125,7 @@ export default function App() {
   const workspace = store.workspace;
   return (
     <>
-      <Header onReset={handleReset} theme={theme} onThemeChange={setTheme} />
+      <Header onReset={handleReset} theme={theme} onThemeChange={setTheme} accent={accent} onAccentChange={setAccent} />
       {toast && <div className="toast-region"><Toast {...toast} /></div>}
       <main className="app-main">
         {!workspace.batch && <Overview disclaimer={workspace.disclaimer} providers={workspace.providers} />}

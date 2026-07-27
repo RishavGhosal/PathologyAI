@@ -15,7 +15,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.localStorage.removeItem("pathologyai-theme");
+  window.localStorage.removeItem("pathologyai-accent");
   delete document.documentElement.dataset.theme;
+  delete document.documentElement.dataset.accent;
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -32,6 +34,9 @@ describe("PathologyAI React frontend", () => {
     await user.selectOptions(theme, "sage");
     expect(document.documentElement.dataset.theme).toBe("sage");
     expect(window.localStorage.getItem("pathologyai-theme")).toBe("sage");
+    await user.selectOptions(screen.getByLabelText("Accent color"), "violet");
+    expect(document.documentElement.dataset.accent).toBe("violet");
+    expect(window.localStorage.getItem("pathologyai-accent")).toBe("violet");
   });
 
   it("renders the pre-upload contract, provider state, and exact multipart upload", async () => {

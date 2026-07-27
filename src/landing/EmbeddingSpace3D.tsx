@@ -1,6 +1,6 @@
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LandingProjectionPoint } from "./embeddingProjection";
 import { LANDING_PROJECTION_POINTS } from "./embeddingProjection";
 
@@ -12,12 +12,23 @@ const COLORS = {
 export function EmbeddingSpace3D({ reducedMotion }: { reducedMotion: boolean }) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<any>(null);
-  const [interacted, setInteracted] = useState(false);
+  const resumeTimerRef = useRef<number | null>(null);
+  const [paused, setPaused] = useState(false);
 
-  function stopIdleRotation() {
-    setInteracted(true);
+  function pauseForInteraction() {
+    if (resumeTimerRef.current !== null) window.clearTimeout(resumeTimerRef.current);
+    setPaused(true);
     wrapperRef.current?.setAttribute("data-user-interacted", "true");
   }
+
+  function resumeAfterIdle() {
+    if (resumeTimerRef.current !== null) window.clearTimeout(resumeTimerRef.current);
+    resumeTimerRef.current = window.setTimeout(() => setPaused(false), 3200);
+  }
+
+  useEffect(() => () => {
+    if (resumeTimerRef.current !== null) window.clearTimeout(resumeTimerRef.current);
+  }, []);
 
   function recordOrbitChange() {
     const angle = controlsRef.current?.getAzimuthalAngle?.();
@@ -48,9 +59,10 @@ export function EmbeddingSpace3D({ reducedMotion }: { reducedMotion: boolean }) 
           maxDistance={7}
           enableDamping
           dampingFactor={0.08}
-          autoRotate={!reducedMotion && !interacted}
+          autoRotate={!reducedMotion && !paused}
           autoRotateSpeed={0.3}
-          onStart={stopIdleRotation}
+          onStart={pauseForInteraction}
+          onEnd={resumeAfterIdle}
           onChange={recordOrbitChange}
         />
       </Canvas>
