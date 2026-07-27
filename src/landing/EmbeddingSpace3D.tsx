@@ -5,8 +5,10 @@ import type { LandingProjectionPoint } from "./embeddingProjection";
 import { LANDING_PROJECTION_POINTS } from "./embeddingProjection";
 
 const COLORS = {
-  teal: "#2f6f69",
-  sage: "#739f8b",
+  teal: "#00a7a0",
+  // This projection has two categorical tones; use a coral counterpart so
+  // the groups remain distinguishable against the existing off-white scene.
+  sage: "#f47767",
 };
 
 export function EmbeddingSpace3D({ reducedMotion }: { reducedMotion: boolean }) {
@@ -59,8 +61,9 @@ export function EmbeddingSpace3D({ reducedMotion }: { reducedMotion: boolean }) 
           maxDistance={7}
           enableDamping
           dampingFactor={0.08}
+          rotateSpeed={1.7}
           autoRotate={!reducedMotion && !paused}
-          autoRotateSpeed={0.3}
+          autoRotateSpeed={0.55}
           onStart={pauseForInteraction}
           onEnd={resumeAfterIdle}
           onChange={recordOrbitChange}
@@ -81,7 +84,7 @@ function PointCloud({ points }: { points: LandingProjectionPoint[] }) {
           scale={0.72 + (index % 4) * 0.15 + point.z * 0.18}
         >
           <sphereGeometry args={[0.065, 10, 10]} />
-          <meshBasicMaterial color={COLORS[point.tone]} transparent opacity={0.5 + point.z * 0.5} />
+          <meshBasicMaterial color={COLORS[point.tone]} transparent opacity={0.68 + point.z * 0.32} />
         </mesh>
       ))}
     </group>
