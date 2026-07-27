@@ -1,7 +1,13 @@
 import type { ReactNode } from "react";
 import type { OperationalMetrics, Priority } from "../types";
 
-export function Header({ onReset }: { onReset: () => void }) {
+export type ThemeName = "dark" | "light" | "sage";
+
+export function Header({ onReset, theme, onThemeChange }: {
+  onReset: () => void;
+  theme: ThemeName;
+  onThemeChange: (theme: ThemeName) => void;
+}) {
   return (
     <header className="site-header">
       <div className="brand">
@@ -9,6 +15,14 @@ export function Header({ onReset }: { onReset: () => void }) {
         <small>Research/Education Prototype · Human Review Required</small>
       </div>
       <div className="header-actions">
+        <label className="theme-control">
+          <span>Theme</span>
+          <select aria-label="Color theme" value={theme} onChange={(event) => onThemeChange(event.target.value as ThemeName)}>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+            <option value="sage">Sage</option>
+          </select>
+        </label>
         <button type="button" onClick={onReset}>New batch</button>
         <a className="button" href="/api/export">Export reviewed CSV</a>
       </div>

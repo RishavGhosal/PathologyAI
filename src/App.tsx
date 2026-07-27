@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Header, Toast } from "./components/common";
+import { Header, Toast, type ThemeName } from "./components/common";
 import { DashboardTab } from "./components/DashboardTab";
 import { EvaluationTab } from "./components/EvaluationTab";
 import { Overview } from "./components/Overview";
@@ -13,6 +13,10 @@ interface ToastState { kind: "success" | "error" | "info"; message: string }
 
 export default function App() {
   const store = useWorkspace();
+  const [theme, setTheme] = useState<ThemeName>(() => {
+    const saved = window.localStorage.getItem("pathologyai-theme");
+    return saved === "light" || saved === "sage" ? saved : "dark";
+  });
   const [activeTab, setActiveTab] = useState<TabId>("queue");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<ReviewFilter>("All");
@@ -30,6 +34,11 @@ export default function App() {
   useEffect(() => () => {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("pathologyai-theme", theme);
+  }, [theme]);
 
   useEffect(() => {
     if (store.error) {
@@ -107,7 +116,7 @@ export default function App() {
   const workspace = store.workspace;
   return (
     <>
-      <Header onReset={handleReset} />
+      <Header onReset={handleReset} theme={theme} onThemeChange={setTheme} />
       {toast && <div className="toast-region"><Toast {...toast} /></div>}
       <main className="app-main">
         {!workspace.batch && <Overview disclaimer={workspace.disclaimer} providers={workspace.providers} />}

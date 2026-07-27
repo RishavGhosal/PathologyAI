@@ -14,11 +14,26 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  window.localStorage.removeItem("pathologyai-theme");
+  delete document.documentElement.dataset.theme;
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
 describe("PathologyAI React frontend", () => {
+  it("switches and persists the selected color theme", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockImplementation(() => response(preUpload()));
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Human review, organized" });
+    const theme = screen.getByLabelText("Color theme");
+    expect(theme).toHaveValue("dark");
+    await user.selectOptions(theme, "sage");
+    expect(document.documentElement.dataset.theme).toBe("sage");
+    expect(window.localStorage.getItem("pathologyai-theme")).toBe("sage");
+  });
+
   it("renders the pre-upload contract, provider state, and exact multipart upload", async () => {
     const user = userEvent.setup();
     const initial = preUpload();
