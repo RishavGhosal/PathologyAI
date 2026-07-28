@@ -2782,6 +2782,144 @@ details[open] summary {
   }
 }
 
+.landing-scenarios {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.7fr) minmax(0, 1.3fr);
+  gap: clamp(2rem, 5vw, 5rem);
+  padding: 4.5rem clamp(1.5rem, 5vw, 5rem);
+  border-top: 1px solid var(--landing-line);
+  background: color-mix(in srgb, var(--landing-bg) 90%, var(--landing-line));
+}
+
+.landing-scenarios-heading {
+  max-width: 18rem;
+}
+
+.landing-scenarios-heading h2 {
+  margin: 0 0 0.8rem;
+  color: var(--landing-ink);
+  font-size: clamp(1.8rem, 3vw, 2.6rem);
+  font-weight: 540;
+  letter-spacing: -0.055em;
+  line-height: 1.04;
+}
+
+.landing-scenarios-heading > p:last-child {
+  color: var(--landing-muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.landing-scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.landing-scenario-card {
+  display: flex;
+  min-width: 0;
+  min-height: 14rem;
+  flex-direction: column;
+  padding: 1.2rem 1.1rem 1rem;
+  border: 1px solid var(--landing-line);
+  border-radius: 0.55rem;
+  background: color-mix(in srgb, var(--landing-bg) 72%, white);
+  transition: border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+}
+
+.landing-scenario-card:hover {
+  border-color: color-mix(in srgb, var(--landing-accent) 55%, var(--landing-line));
+  box-shadow: 0 0.8rem 2rem rgba(24, 35, 31, 0.07);
+  transform: translateY(-2px);
+}
+
+.landing-scenario-card .landing-step-icon {
+  width: 1.7rem;
+  height: 1.7rem;
+  margin-bottom: 1.4rem;
+}
+
+.landing-scenario-card h3 {
+  margin: 0 0 0.55rem;
+  color: var(--landing-ink);
+  font-size: 0.96rem;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.landing-scenario-card p {
+  margin: 0;
+  color: var(--landing-muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.landing-scenario-link {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  align-self: flex-start;
+  gap: 0.35rem;
+  margin-top: auto;
+  padding: 0.62rem 0.78rem;
+  border: 0;
+  border-radius: 0.32rem;
+  background: transparent;
+  color: var(--landing-accent);
+  font-size: 0.72rem;
+  font-weight: 760;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.landing-scenario-link span {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  font-size: 0.9rem;
+}
+
+button.landing-scenario-link:hover:not(:disabled),
+button.landing-scenario-link:focus-visible {
+  border-color: var(--landing-ink);
+  background: var(--landing-ink);
+  color: var(--landing-bg);
+}
+
+@media (max-width: 980px) and (min-width: 761px) {
+  .landing-scenarios {
+    grid-template-columns: minmax(180px, 0.6fr) minmax(0, 1.4fr);
+    gap: 2rem;
+    padding-inline: 2rem;
+  }
+
+  .landing-scenario-grid {
+    gap: 0.65rem;
+  }
+}
+
+@media (max-width: 760px) {
+  .landing-scenarios {
+    display: block;
+    padding: 3.5rem 1rem;
+  }
+
+  .landing-scenarios-heading {
+    max-width: 30rem;
+    margin-bottom: 2rem;
+  }
+
+  .landing-scenario-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .landing-scenario-card {
+    min-height: 0;
+  }
+}
+
 /* Three-zone hero: copy, workflow context, and the dominant projection. */
 .landing-hero {
   display: grid;

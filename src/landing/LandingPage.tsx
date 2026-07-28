@@ -30,7 +30,7 @@ export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
               A calmer way to organize image review.
             </motion.h1>
             <motion.p className="landing-lede" initial={reducedMotion ? false : { opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.32, delay: 0.2, ease }}>
-              Turn a slide folder into a clear, human-led review queue with transparent visual summaries.
+              For reviewers drowning in slide queues — see what&apos;s next, and why, in one glance.
             </motion.p>
             <motion.div initial={reducedMotion ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3, delay: 0.28, ease }}>
               <button className="landing-primary-cta" type="button" onClick={onOpenApp}>Open the review workspace <span aria-hidden="true">→</span></button>
@@ -39,16 +39,29 @@ export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
           <div className="landing-hero-workflow">
           <div className="landing-hero-divider" aria-hidden="true" />
           <div className="landing-workflow" aria-label="Review workflow summary">
-            <HeroWorkflowRow kind="cluster" label="Create embeddings" description="UNI or Hibou-B maps each image." />
-            <HeroWorkflowRow kind="tag" label="Estimate proxy labels" description="MHIST head suggests review order." />
-            <HeroWorkflowRow kind="checklist" label="Triage with context" description="Reviewer checks and confirms queue." />
+              <HeroWorkflowRow kind="cluster" label="See what's next, and why" description="Every slide arrives with a UNI or Hibou-B embedding, so similar cases are grouped instead of scattered." />
+              <HeroWorkflowRow kind="tag" label="Know where to look first" description="The MHIST-based head flags likely review priority, so you're not guessing which slides need attention now." />
+              <HeroWorkflowRow kind="checklist" label="Confirm, don't just trust" description="You see the suggested order and reasoning, and every queue position stays yours to override." />
           </div>
-          <p className="landing-hero-note">Built for accountable review: every suggested queue position stays visible, explainable, and human-confirmed.</p>
+            <p className="landing-hero-note">No black-box ranking — you always see why a slide moved up, and the final call is yours.</p>
           </div>
           <div className="landing-hero-visual">
             <EmbeddingCluster reducedMotion={Boolean(reducedMotion)} />
           </div>
         </section>
+
+        <motion.section className="landing-scenarios" aria-labelledby="scenario-title" {...reveal} viewport={{ once: true, amount: 0.2 }}>
+          <div className="landing-scenarios-heading">
+            <p className="landing-kicker">Start where you are</p>
+            <h2 id="scenario-title">What are you trying to do?</h2>
+            <p>Choose a starting point, then let the workspace guide the next step.</p>
+          </div>
+          <div className="landing-scenario-grid">
+            <ScenarioCard icon="cluster" title="I have a new batch" text="Upload a folder, choose a feature encoder, and create a review queue." onOpenApp={onOpenApp} />
+            <ScenarioCard icon="tag" title="I want to inspect an image" text="Compare the original image with its feature overlay and computed region summaries." onOpenApp={onOpenApp} />
+            <ScenarioCard icon="checklist" title="I need to finish review work" text="Confirm reviewer decisions and export the records you marked complete." onOpenApp={onOpenApp} />
+          </div>
+        </motion.section>
 
         <motion.section className="landing-how landing-detail-view" aria-labelledby="how-title" {...reveal} viewport={{ once: true, amount: 0.18 }}>
           <div className="landing-section-intro">
@@ -95,6 +108,17 @@ function Step({ icon, title, text }: { icon: "cluster" | "tag" | "checklist"; ti
       <StepIcon kind={icon} />
       <h3>{title}</h3>
       <p>{text}</p>
+    </article>
+  );
+}
+
+function ScenarioCard({ icon, title, text, onOpenApp }: { icon: "cluster" | "tag" | "checklist"; title: string; text: string; onOpenApp: () => void }) {
+  return (
+    <article className="landing-scenario-card">
+      <StepIcon kind={icon} />
+      <h3>{title}</h3>
+      <p>{text}</p>
+      <button className="landing-scenario-link" type="button" onClick={onOpenApp}>Open workspace <span aria-hidden="true">{"\u2192"}</span></button>
     </article>
   );
 }
