@@ -3,6 +3,7 @@ import { lazy, Suspense } from "react";
 import { LANDING_PROJECTION_POINTS } from "./embeddingProjection";
 
 const ease = [0.22, 1, 0.36, 1] as const;
+const LANDING_FALLBACK_RENDER_CAP = 180;
 const EmbeddingSpace3D = lazy(() => import("./EmbeddingSpace3D").then((module) => ({ default: module.EmbeddingSpace3D })));
 
 export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
@@ -35,14 +36,21 @@ export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
               <button className="landing-primary-cta" type="button" onClick={onOpenApp}>Open the review workspace <span aria-hidden="true">→</span></button>
             </motion.div>
           </div>
-          <motion.div className="landing-hero-note" initial={reducedMotion ? false : { opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.34, delay: 0.34, ease }}>
-            <span className="landing-note-line" aria-hidden="true" />
-            <p>Built for accountable review: every suggested queue position stays visible, explainable, and human-confirmed.</p>
-          </motion.div>
-          <EmbeddingCluster reducedMotion={Boolean(reducedMotion)} />
+          <div className="landing-hero-workflow">
+          <div className="landing-hero-divider" aria-hidden="true" />
+          <div className="landing-workflow" aria-label="Review workflow summary">
+            <HeroWorkflowRow kind="cluster" label="Create embeddings" description="UNI or Hibou-B maps each image." />
+            <HeroWorkflowRow kind="tag" label="Estimate proxy labels" description="MHIST head suggests review order." />
+            <HeroWorkflowRow kind="checklist" label="Triage with context" description="Reviewer checks and confirms queue." />
+          </div>
+          <p className="landing-hero-note">Built for accountable review: every suggested queue position stays visible, explainable, and human-confirmed.</p>
+          </div>
+          <div className="landing-hero-visual">
+            <EmbeddingCluster reducedMotion={Boolean(reducedMotion)} />
+          </div>
         </section>
 
-        <motion.section className="landing-how" aria-labelledby="how-title" {...reveal} viewport={{ once: true, amount: 0.18 }}>
+        <motion.section className="landing-how landing-detail-view" aria-labelledby="how-title" {...reveal} viewport={{ once: true, amount: 0.18 }}>
           <div className="landing-section-intro">
             <p className="landing-kicker">How it works</p>
             <h2 id="how-title">From visual representation to reviewer triage.</h2>
@@ -91,6 +99,15 @@ function Step({ icon, title, text }: { icon: "cluster" | "tag" | "checklist"; ti
   );
 }
 
+function HeroWorkflowRow({ kind, label, description }: { kind: "cluster" | "tag" | "checklist"; label: string; description: string }) {
+  return (
+    <div className="landing-workflow-row">
+      <span className="landing-workflow-badge"><StepIcon kind={kind} /></span>
+      <span className="landing-workflow-copy"><strong>{label}</strong><small>{description}</small></span>
+    </div>
+  );
+}
+
 function StepIcon({ kind }: { kind: "cluster" | "tag" | "checklist" }) {
   if (kind === "tag") {
     return <svg className="landing-step-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M6 7.5h10.2L26 17.3 17.3 26 7.5 16.2V7.5Z" /><circle cx="11.5" cy="12" r="1.5" /><path d="m15 17 2 2 4-4" /></svg>;
@@ -112,7 +129,7 @@ function StaticEmbeddingCluster({ reducedMotion }: { reducedMotion: boolean }) {
       <svg viewBox="0 0 520 360" role="img" aria-label="Loading an interactive 3D t-SNE projection of real UNI embeddings from an MHIST sample">
         <path className="embedding-axis" d="M55 300H472M55 300V48" />
         <motion.g animate={drift} transition={reducedMotion ? undefined : { duration: 12, repeat: Infinity, ease: "easeInOut" }}>
-          {LANDING_PROJECTION_POINTS.map((point, index) => {
+          {LANDING_PROJECTION_POINTS.slice(0, LANDING_FALLBACK_RENDER_CAP).map((point, index) => {
             const projectedX = point.x * 0.78 + point.z * 0.22;
             const projectedY = point.y * 0.8 + point.z * 0.2;
             return <circle key={`${point.x}-${point.y}-${point.z}`} className={`embedding-point embedding-point-${point.tone}`} cx={58 + projectedX * 400} cy={58 + (1 - projectedY) * 218} r={3.5 + (index % 4) * 1.1 + point.z * 1.4} opacity={0.5 + point.z * 0.5} />;

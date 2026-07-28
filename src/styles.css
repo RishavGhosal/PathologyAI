@@ -2599,3 +2599,342 @@ details[open] summary {
     transition: none;
   }
 }
+
+/* Full-bleed landing hero: the workflow copy sits over a soft background scrim. */
+.landing-page {
+  --landing-bg: #f7f6f1;
+  background-color: var(--landing-bg);
+  overflow-x: hidden;
+}
+
+.landing-hero {
+  position: relative;
+  display: block;
+  min-height: clamp(42rem, 80vh, 48rem);
+  padding: 0;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.landing-hero > .embedding-cluster {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.landing-hero .embedding-space-3d {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.landing-hero-scrim {
+  position: absolute;
+  z-index: 1;
+  inset: 0 auto 0 0;
+  display: flex;
+  width: 58%;
+  min-width: 34rem;
+  align-items: flex-start;
+  padding: 5rem clamp(1.5rem, 5vw, 5rem);
+  background: linear-gradient(90deg, var(--landing-bg) 0%, var(--landing-bg) 45%, transparent 100%);
+  pointer-events: none;
+}
+
+.landing-hero-content {
+  width: min(100%, 34rem);
+  min-width: 0;
+  pointer-events: auto;
+}
+
+.landing-hero-copy {
+  max-width: none;
+}
+
+.landing-hero h1 {
+  max-width: 14ch;
+  font-size: clamp(3rem, 6vw, 6rem);
+}
+
+.landing-hero-note {
+  display: block;
+  max-width: 30rem;
+  margin: 1.1rem 0 0;
+  color: var(--landing-muted);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.landing-hero-divider {
+  width: min(100%, 29rem);
+  height: 1px;
+  margin: 1.55rem 0 1.05rem;
+  background: color-mix(in srgb, var(--landing-line) 78%, transparent);
+}
+
+.landing-workflow {
+  display: grid;
+  width: min(100%, 29rem);
+  gap: 0.7rem;
+}
+
+.landing-workflow-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 0.62rem;
+  align-items: center;
+}
+
+.landing-workflow-badge {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--landing-accent) 30%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--landing-accent) 14%, transparent);
+}
+
+.landing-workflow-badge .landing-step-icon {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  stroke-width: 1.7;
+}
+
+.landing-workflow-copy {
+  display: grid;
+  gap: 0.05rem;
+}
+
+.landing-workflow-copy strong {
+  color: var(--landing-ink);
+  font-size: 0.72rem;
+  font-weight: 780;
+  line-height: 1.2;
+}
+
+.landing-workflow-copy small {
+  color: var(--landing-muted);
+  font-size: 0.64rem;
+  line-height: 1.3;
+}
+
+.landing-hero .embedding-3d-hint {
+  right: clamp(1.5rem, 5vw, 5rem);
+  bottom: 1.15rem;
+  left: auto;
+  z-index: 2;
+  max-width: calc(100% - 2 * clamp(1.5rem, 5vw, 5rem));
+  text-align: right;
+  white-space: normal;
+}
+
+.landing-detail-view {
+  background: color-mix(in srgb, var(--landing-bg) 78%, var(--landing-line));
+}
+
+.landing-how > *,
+.landing-steps,
+.landing-step {
+  min-width: 0;
+}
+
+@media (max-width: 980px) and (min-width: 761px) {
+  .landing-hero-scrim {
+    width: 68%;
+  }
+}
+
+@media (max-width: 760px) {
+  .landing-hero {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .landing-hero-scrim {
+    position: relative;
+    inset: auto;
+    display: block;
+    order: 1;
+    width: 100%;
+    min-width: 0;
+    padding: 4.5rem 1rem 2rem;
+    background: var(--landing-bg);
+  }
+
+  .landing-hero > .embedding-cluster {
+    position: relative;
+    inset: auto;
+    order: 2;
+    width: 100%;
+    height: 22rem;
+    min-height: 0;
+  }
+
+  .landing-hero .embedding-3d-hint {
+    right: 1rem;
+    bottom: 0.8rem;
+  }
+}
+
+/* Three-zone hero: copy, workflow context, and the dominant projection. */
+.landing-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 0.30fr) minmax(13rem, 0.25fr) minmax(0, 0.45fr);
+  gap: clamp(1.25rem, 2.8vw, 3rem);
+  align-items: center;
+  min-height: clamp(42rem, 80vh, 48rem);
+  padding: 5rem clamp(1.5rem, 5vw, 5rem) 4rem;
+}
+
+.landing-hero-copy,
+.landing-hero-workflow,
+.landing-hero-visual {
+  min-width: 0;
+}
+
+.landing-hero-copy {
+  grid-column: 1;
+  grid-row: 1;
+  max-width: 31rem;
+}
+
+.landing-hero-copy h1 {
+  max-width: 12ch;
+  font-size: clamp(3rem, 5vw, 5.5rem);
+}
+
+.landing-hero-workflow {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 32rem;
+  padding-block: 1rem;
+}
+
+.landing-hero-workflow .landing-hero-divider,
+.landing-hero-workflow .landing-workflow {
+  width: 100%;
+}
+
+.landing-hero-workflow .landing-hero-divider {
+  margin: 0 0 1.6rem;
+}
+
+.landing-hero-workflow .landing-workflow {
+  gap: 1.8rem;
+}
+
+.landing-hero-workflow .landing-workflow-row {
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 0.8rem;
+}
+
+.landing-hero-workflow .landing-workflow-badge {
+  width: 30px;
+  height: 30px;
+}
+
+.landing-hero-workflow .landing-workflow-badge .landing-step-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.landing-hero-workflow .landing-workflow-copy strong {
+  font-size: 0.92rem;
+  line-height: 1.25;
+}
+
+.landing-hero-workflow .landing-workflow-copy small {
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.landing-hero-workflow .landing-hero-note {
+  max-width: none;
+  margin-top: 1.7rem;
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.landing-hero-visual {
+  position: relative;
+  grid-column: 3;
+  grid-row: 1;
+  align-self: stretch;
+  min-height: 32rem;
+  transform: translateX(clamp(0px, 1.5vw, 1.5rem));
+}
+
+.landing-hero-visual > .embedding-cluster,
+.landing-hero-visual .embedding-space-3d {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.landing-hero .embedding-3d-hint {
+  right: 0.5rem;
+  bottom: 0.9rem;
+  max-width: calc(100% - 1rem);
+}
+
+@media (max-width: 980px) and (min-width: 761px) {
+  .landing-hero {
+    grid-template-columns: minmax(0, 0.30fr) minmax(12rem, 0.27fr) minmax(0, 0.43fr);
+    gap: 1.25rem;
+    padding-inline: 2rem;
+  }
+
+  .landing-hero-visual {
+    transform: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .landing-hero {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2.5rem;
+    padding: 4.5rem 1rem 3.5rem;
+  }
+
+  .landing-hero-copy,
+  .landing-hero-workflow,
+  .landing-hero-visual {
+    width: 100%;
+  }
+
+  .landing-hero-copy {
+    order: 1;
+  }
+
+  .landing-hero-workflow {
+    order: 2;
+    height: auto;
+    min-height: 0;
+  }
+
+  .landing-hero-visual {
+    order: 3;
+    height: 22rem;
+    min-height: 22rem;
+    transform: none;
+  }
+
+  .landing-hero-copy h1 {
+    max-width: 14ch;
+  }
+}
