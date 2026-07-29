@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { LandingProjectionPoint } from "./embeddingProjection";
 import { LANDING_PROJECTION_POINTS } from "./embeddingProjection";
+import { sampleLandingPoints } from "./landingSampling";
 
 const COLORS = {
   teal: "#00a7a0",
@@ -12,7 +13,7 @@ const COLORS = {
   sage: "#f47767",
 };
 
-const LANDING_RENDER_CAP = 1200;
+const LANDING_RENDER_CAP = 300;
 
 export function EmbeddingSpace3D({ reducedMotion }: { reducedMotion: boolean }) {
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -50,17 +51,17 @@ export function EmbeddingSpace3D({ reducedMotion }: { reducedMotion: boolean }) 
       role="img"
       aria-label="Interactive 3D t-SNE projection of real UNI embeddings from an MHIST sample. Drag to rotate and scroll to zoom."
     >
-      <Canvas camera={{ position: [0, 0, 6.2], fov: 36 }} dpr={[1, 1.5]} gl={{ alpha: true, antialias: true }}>
+      <Canvas camera={{ position: [0, 0, 7.6], fov: 36 }} dpr={[1, 1.5]} gl={{ alpha: true, antialias: true }}>
         <color attach="background" args={["#f7f6f1"]} />
         <ambientLight intensity={1} />
-        <PointCloud points={LANDING_PROJECTION_POINTS.slice(0, LANDING_RENDER_CAP)} />
+        <PointCloud points={sampleLandingPoints(LANDING_PROJECTION_POINTS, LANDING_RENDER_CAP)} />
         <OrbitControls
           ref={controlsRef}
           makeDefault
           enablePan={false}
           enableZoom
-          minDistance={3.4}
-          maxDistance={8.5}
+          minDistance={4.2}
+          maxDistance={10}
           enableDamping
           dampingFactor={0.08}
           rotateSpeed={1.7}
@@ -81,7 +82,7 @@ function PointCloud({ points }: { points: LandingProjectionPoint[] }) {
   const sagePoints = useMemo(() => points.filter((point) => point.tone === "sage"), [points]);
 
   return (
-    <group position={[0, 0.04, 0]} scale={[1.2, 1.12, 1.04]}>
+    <group position={[0, 0.04, 0]} scale={[1, 0.94, 0.9]}>
       <InstancedPoints points={tealPoints} color={COLORS.teal} />
       <InstancedPoints points={sagePoints} color={COLORS.sage} />
     </group>

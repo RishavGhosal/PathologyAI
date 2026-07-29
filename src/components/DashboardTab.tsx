@@ -1,6 +1,7 @@
 import type { BatchState } from "../types";
 import { DataTable, MetricsCards, PriorityChip } from "./common";
 import { effectivePriority } from "../queue";
+import { EmbeddingMap } from "./EmbeddingMap";
 
 export function DashboardTab({ batch }: { batch: BatchState }) {
   const metrics = batch.metrics;
@@ -9,6 +10,7 @@ export function DashboardTab({ batch }: { batch: BatchState }) {
       <p className="eyebrow">Batch operations</p>
       <h2>Operational dashboard</h2>
       <MetricsCards metrics={metrics} />
+      <EmbeddingMap projection={batch.embedding_projection} />
       <section className="batch-summaries" aria-label="Computed batch summaries">
         <h3>Computed summaries for high-priority images</h3>
         {batch.records.filter((record) => effectivePriority(record) !== "Lower Priority").length ? (

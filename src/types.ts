@@ -168,6 +168,29 @@ export interface BatchState {
   records: ImageRecord[];
   skipped: SkippedFile[];
   metrics: OperationalMetrics;
+  embedding_projection?: EmbeddingProjection;
+}
+
+export type EmbeddingProxyLabel = "HP" | "SSA" | null;
+
+export interface EmbeddingProjectionPoint {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  proxy_label: EmbeddingProxyLabel;
+  suggested_priority: Priority;
+  embedding_model: string | null;
+  reviewed: boolean;
+}
+
+export interface EmbeddingProjection {
+  available: boolean;
+  points: EmbeddingProjectionPoint[];
+  method: string | null;
+  sample_count: number;
+  full_count: number;
+  error: string | null;
 }
 
 export interface WorkspaceSnapshot {

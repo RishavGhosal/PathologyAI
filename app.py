@@ -28,6 +28,7 @@ from pathology_ai.dashboard_metrics import (
     UNKNOWN_OR_OTHER_DOMAIN,
     build_operational_metrics,
 )
+from pathology_ai.dashboard_visuals import ProjectionUnavailable, build_tsne_projection
 from pathology_ai.hibou_provider import get_hibou_provider_status
 from pathology_ai.modal_provider import get_modal_provider_status
 from pathology_ai.pipeline import BatchResult, UploadPayload, format_file_size, process_uploads
@@ -93,6 +94,7 @@ class Workspace:
     computed_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     caption_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     model_map_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    projection_cache: dict[str, Any] | None = None
 
 
 SESSIONS: dict[str, Workspace] = {}
@@ -227,6 +229,7 @@ def _computed_features(space: Workspace, record: Any) -> dict[str, Any]:
     analysis: RegionAnalysis = analyze_variation_map(
         primary_map,
         source=getattr(attention, "embedding_model", None) or "feature_variation",
+        exclude_edge_regions="possible_edge_truncation" in getattr(record.quality, "advisory_codes", ()),
     )
 
     model_agreement_score: float | None = None
@@ -331,6 +334,67 @@ def _record_json(space: Workspace, record: Any, review: dict[str, Any]) -> dict[
     }
 
 
+def _projection_json(space: Workspace) -> dict[str, Any]:
+    """Return a browser-safe UNI projection without shipping raw embeddings."""
+
+    records = space.batch.records if space.batch is not None else []
+    eligible = [
+        record for record in records
+        if _model_kind(getattr(record.attention, "embedding_model", None)) == "uni"
+        and getattr(record.attention, "embedding", None) is not None
+    ]
+    cache_key = "|".join(
+        f"{record.image_id}:{len(record.attention.embedding or ())}"
+        for record in eligible
+    )
+    if space.projection_cache is not None and space.projection_cache.get("key") == cache_key:
+        cached = space.projection_cache["value"]
+    else:
+        if not eligible:
+            value = {"available": False, "points": [], "method": None, "sample_count": 0, "full_count": 0, "error": "No UNI embeddings are available for this batch."}
+        else:
+            try:
+                projection = build_tsne_projection(
+                    tuple(record.attention.embedding for record in eligible),
+                )
+                coordinates = projection.coordinates
+                x_values = [point[0] for point in coordinates]
+                y_values = [point[1] for point in coordinates]
+                x_min, x_max = min(x_values), max(x_values)
+                y_min, y_max = min(y_values), max(y_values)
+                x_span = x_max - x_min or 1.0
+                y_span = y_max - y_min or 1.0
+                points = []
+                for record, (x, y) in zip(eligible, coordinates):
+                    proxy_label = getattr(record, "proxy_label", None)
+                    if proxy_label not in {"HP", "SSA"}:
+                        proxy_label = None
+                    review = space.reviews[record.image_id]
+                    points.append({
+                        "id": record.image_id,
+                        "name": record.display_name,
+                        "x": round((x - x_min) / x_span, 6),
+                        "y": round((y - y_min) / y_span, 6),
+                        "proxy_label": proxy_label,
+                        "suggested_priority": record.triage.suggested_priority,
+                        "embedding_model": record.attention.embedding_model,
+                        "reviewed": bool(review.get("reviewed", False)),
+                    })
+                value = {"available": True, "points": points, "method": projection.method, "sample_count": projection.sample_count, "full_count": len(points), "error": None}
+            except ProjectionUnavailable as exc:
+                value = {"available": False, "points": [], "method": None, "sample_count": 0, "full_count": len(eligible), "error": str(exc)}
+        space.projection_cache = {"key": cache_key, "value": value}
+        cached = value
+
+    if cached.get("available"):
+        points = [
+            {**point, "reviewed": bool(space.reviews.get(point["id"], {}).get("reviewed", point["reviewed"]))}
+            for point in cached["points"]
+        ]
+        return {**cached, "points": points}
+    return cached
+
+
 def _workspace_json(space: Workspace) -> dict[str, Any]:
     batch = space.batch
     if batch is None:
@@ -350,6 +414,7 @@ def _workspace_json(space: Workspace) -> dict[str, Any]:
             "records": [_record_json(space, record, space.reviews[record.image_id]) for record in batch.records],
             "skipped": [asdict(item) for item in batch.skipped],
             "metrics": asdict(metrics),
+            "embedding_projection": _projection_json(space),
         },
     }
 
@@ -509,6 +574,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 space.computed_cache.clear()
                 space.caption_cache.clear()
                 space.model_map_cache.clear()
+                space.projection_cache = None
                 space.provider_kind, space.use_review_model = kind, requested_head and (use_head or remote_kind == "uni")
                 space.domain_context = fields.get("domain_context", "unknown_or_other") if fields.get("domain_context") in DOMAIN_VALUES.values() else "unknown_or_other"
                 space.screening_seconds = max(0.0, min(600.0, float(fields.get("screening_seconds", DEFAULT_SCREENING_SECONDS_PER_IMAGE))))
@@ -546,6 +612,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 space.computed_cache.clear()
                 space.caption_cache.clear()
                 space.model_map_cache.clear()
+                space.projection_cache = None
                 space.domain_context = "unknown_or_other"
                 space.screening_seconds = DEFAULT_SCREENING_SECONDS_PER_IMAGE
                 space.provider_kind = _preferred_provider_kind()

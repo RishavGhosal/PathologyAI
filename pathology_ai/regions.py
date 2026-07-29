@@ -94,11 +94,25 @@ def _fallback_component(values: np.ndarray) -> np.ndarray:
     return np.asarray([[y, x]], dtype=np.int32)
 
 
+def _touches_frame_edge(component: np.ndarray, shape: tuple[int, int], margin: int = 1) -> bool:
+    """Return whether a candidate reaches the outer image frame."""
+
+    ys, xs = component[:, 0], component[:, 1]
+    height, width = shape
+    return bool(
+        int(xs.min()) <= margin - 1
+        or int(ys.min()) <= margin - 1
+        or int(xs.max()) >= width - margin
+        or int(ys.max()) >= height - margin
+    )
+
+
 def analyze_variation_map(
     variation_map: np.ndarray,
     *,
     source: str,
     max_regions: int = 3,
+    exclude_edge_regions: bool = False,
 ) -> RegionAnalysis:
     """Find the top one to three contiguous high-intensity regions.
 
@@ -127,7 +141,24 @@ def analyze_variation_map(
         score = float(np.mean(component_values) * (0.7 + 0.3 * min(len(component) / max(values.size * 0.08, 1.0), 1.0)))
         scored.append((score, component))
     scored.sort(key=lambda item: (item[0], float(np.max(normalized[item[1][:, 0], item[1][:, 1]]))), reverse=True)
+    if exclude_edge_regions:
+        in_frame = [
+            item for item in scored
+            if not _touches_frame_edge(item[1], values.shape)
+        ]
+        # Preserve a usable fallback when the entire map reaches the frame;
+        # there is no safer replacement candidate in that case.
+        if in_frame:
+            scored = in_frame
     selected = scored[:max_regions]
+
+    if not selected:
+        return RegionAnalysis(
+            (),
+            0.0,
+            "No in-frame high-variation region was detected",
+            source,
+        )
 
     total_mass = max(float(np.sum(normalized)), 1e-8)
     regions: list[FeatureRegion] = []

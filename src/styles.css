@@ -11,6 +11,7 @@
   --muted: #aab4c4;
   --line: #343d4e;
   --blue: #00c0f2;
+  --accent-contrast: #071218;
   --accent-secondary: #a78bfa;
   --accent-tertiary: #faca2b;
   --provider-panel-bg: linear-gradient(120deg, rgba(23, 27, 36, 0.98), rgba(23, 35, 48, 0.92));
@@ -294,7 +295,7 @@ button.primary,
 .button.primary {
   border-color: var(--blue);
   background: var(--blue);
-  color: #071218;
+  color: var(--accent-contrast);
   font-weight: 780;
 }
 
@@ -302,7 +303,7 @@ button.primary:hover:not(:disabled),
 .button.primary:hover {
   border-color: var(--blue);
   background: var(--blue);
-  box-shadow: 0 0 0 3px rgba(0, 192, 242, 0.14);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 14%, transparent);
 }
 
 button.danger,
@@ -458,6 +459,24 @@ header,
   gap: 0.72rem;
 }
 
+.app-brand {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.app-brand:hover,
+.app-brand:focus-visible {
+  color: var(--blue);
+}
+
+.app-logo {
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  color: currentColor;
+  overflow: visible;
+}
+
 .brand-icon {
   display: none;
 }
@@ -469,9 +488,9 @@ header,
 .brand strong,
 .brand-title {
   display: block;
-  font-size: 1.02rem;
-  font-weight: 790;
-  letter-spacing: -0.015em;
+  font-size: 0.96rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
 }
 
 .brand small,
@@ -479,7 +498,8 @@ header,
   display: block;
   overflow: hidden;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -922,7 +942,7 @@ main,
 .workflow-step[aria-current="step"] {
   border-color: var(--blue);
   background: var(--blue);
-  color: #071218;
+  color: var(--accent-contrast);
   font-weight: 780;
 }
 
@@ -992,7 +1012,52 @@ main,
 
 .upload .actions,
 .upload-form .actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.85rem;
   margin-top: 1rem;
+}
+
+.upload-progress {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: 0.28rem;
+}
+
+.upload-progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.32rem;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.upload-progress-label strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.upload-progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--input-bg);
+}
+
+.upload-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--blue), #75e5ff, var(--blue));
+  background-size: 200% 100%;
+  animation: upload-progress-shimmer 1.2s linear infinite;
+  transition: width 180ms ease;
+}
+
+@keyframes upload-progress-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
 }
 
 /* Tabs */
@@ -1038,7 +1103,7 @@ main,
 .tab-button[aria-selected="true"] {
   border-color: var(--blue);
   background: var(--blue);
-  color: #071218;
+  color: var(--accent-contrast);
   font-weight: 780;
 }
 
@@ -1431,6 +1496,16 @@ main,
   gap: 0.5rem;
 }
 
+.custom-color-control input[type="color"] {
+  width: 2.25rem;
+  height: 2rem;
+  padding: 0.12rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--input-bg);
+  cursor: pointer;
+}
+
 .theme-control {
   display: inline-flex;
   align-items: center;
@@ -1564,6 +1639,185 @@ main,
   padding: 0.75rem;
   place-items: start;
   text-align: left;
+}
+
+/* Dashboard embedding map, evaluation, and tables */
+.embedding-map-panel {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.embedding-map-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.embedding-map-heading h3 {
+  margin: 0.15rem 0 0;
+}
+
+.embedding-map-note {
+  max-width: 42rem;
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.embedding-map-controls {
+  display: grid;
+  min-width: 240px;
+  gap: 0.4rem;
+}
+
+.embedding-map-controls > label,
+.embedding-swatch span {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 720;
+}
+
+.embedding-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.embedding-swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+.embedding-swatch input {
+  width: 1.45rem;
+  height: 1.45rem;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.embedding-progress {
+  margin: 0.95rem 0 0.75rem;
+}
+
+.embedding-progress-label,
+.embedding-map-meta,
+.embedding-map-legend,
+.embedding-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.embedding-progress-label strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.embedding-progress-track {
+  height: 7px;
+  margin-top: 0.35rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--input-bg);
+}
+
+.embedding-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--blue);
+  transition: width 180ms ease;
+}
+
+.embedding-map-meta {
+  margin-bottom: 0.45rem;
+}
+
+.embedding-map-canvas {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--input-bg);
+}
+
+.embedding-map-canvas svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.embedding-map-background {
+  fill: var(--input-bg);
+}
+
+.embedding-map-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.embedding-map-axis-label {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.embedding-map-point {
+  cursor: pointer;
+  outline: none;
+  transition: opacity 120ms ease, r 120ms ease;
+}
+
+.embedding-map-point:focus-visible {
+  stroke: var(--text);
+  stroke-width: 2.5;
+}
+
+.embedding-map-tooltip rect {
+  fill: var(--surface);
+  stroke: var(--line);
+}
+
+.embedding-map-tooltip text {
+  fill: var(--text);
+  font-size: 10px;
+}
+
+.embedding-map-legend {
+  justify-content: flex-start;
+  margin-top: 0.55rem;
+}
+
+.embedding-map-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+.embedding-map-legend i {
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 50%;
+}
+
+.embedding-selection {
+  justify-content: flex-start;
+  margin: 0.6rem 0 0;
+}
+
+.embedding-map-empty {
+  min-height: 120px;
+  margin-top: 0.5rem;
 }
 
 /* Dashboard, evaluation, and tables */
@@ -1788,6 +2042,14 @@ details[open] summary {
 
 /* Responsive collapse: the product contract fixes this breakpoint. */
 @media (max-width: 850px) {
+  .embedding-map-heading {
+    display: grid;
+  }
+
+  .embedding-map-controls {
+    min-width: 0;
+  }
+
   header,
   .app-header {
     position: static;
@@ -2067,6 +2329,8 @@ details[open] summary {
   width: 100%;
   height: auto;
   overflow: visible;
+  -webkit-mask-image: radial-gradient(ellipse 78% 82% at center, #000 52%, rgba(0, 0, 0, 0.92) 68%, transparent 100%);
+  mask-image: radial-gradient(ellipse 78% 82% at center, #000 52%, rgba(0, 0, 0, 0.92) 68%, transparent 100%);
 }
 
 .embedding-axis {
@@ -2139,6 +2403,8 @@ details[open] summary {
   width: 100% !important;
   height: 100% !important;
   cursor: grab;
+  -webkit-mask-image: radial-gradient(ellipse 78% 82% at center, #000 52%, rgba(0, 0, 0, 0.92) 68%, transparent 100%);
+  mask-image: radial-gradient(ellipse 78% 82% at center, #000 52%, rgba(0, 0, 0, 0.92) 68%, transparent 100%);
 }
 
 .embedding-space-3d canvas:active {
@@ -3047,6 +3313,7 @@ button.landing-scenario-link:focus-visible {
     align-items: stretch;
     gap: 2.5rem;
     padding: 4.5rem 1rem 3.5rem;
+    overflow: visible;
   }
 
   .landing-hero-copy,
@@ -3070,6 +3337,15 @@ button.landing-scenario-link:focus-visible {
     height: 22rem;
     min-height: 22rem;
     transform: none;
+    max-width: 100%;
+    overflow: visible;
+  }
+
+  .landing-hero-visual > .embedding-cluster,
+  .landing-hero-visual .embedding-space-3d,
+  .landing-hero-visual .embedding-space-3d canvas {
+    max-width: 100%;
+    overflow: visible;
   }
 
   .landing-hero-copy h1 {

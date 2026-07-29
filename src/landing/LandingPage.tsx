@@ -1,9 +1,10 @@
 import { motion, useReducedMotion } from "framer-motion";
 import { lazy, Suspense } from "react";
 import { LANDING_PROJECTION_POINTS } from "./embeddingProjection";
+import { sampleLandingPoints } from "./landingSampling";
 
 const ease = [0.22, 1, 0.36, 1] as const;
-const LANDING_FALLBACK_RENDER_CAP = 180;
+const LANDING_FALLBACK_RENDER_CAP = 60;
 const EmbeddingSpace3D = lazy(() => import("./EmbeddingSpace3D").then((module) => ({ default: module.EmbeddingSpace3D })));
 
 export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
@@ -153,7 +154,7 @@ function StaticEmbeddingCluster({ reducedMotion }: { reducedMotion: boolean }) {
       <svg viewBox="0 0 520 360" role="img" aria-label="Loading an interactive 3D t-SNE projection of real UNI embeddings from an MHIST sample">
         <path className="embedding-axis" d="M55 300H472M55 300V48" />
         <motion.g animate={drift} transition={reducedMotion ? undefined : { duration: 12, repeat: Infinity, ease: "easeInOut" }}>
-          {LANDING_PROJECTION_POINTS.slice(0, LANDING_FALLBACK_RENDER_CAP).map((point, index) => {
+          {sampleLandingPoints(LANDING_PROJECTION_POINTS, LANDING_FALLBACK_RENDER_CAP).map((point, index) => {
             const projectedX = point.x * 0.78 + point.z * 0.22;
             const projectedY = point.y * 0.8 + point.z * 0.2;
             return <circle key={`${point.x}-${point.y}-${point.z}`} className={`embedding-point embedding-point-${point.tone}`} cx={58 + projectedX * 400} cy={58 + (1 - projectedY) * 218} r={3.5 + (index % 4) * 1.1 + point.z * 1.4} opacity={0.5 + point.z * 0.5} />;

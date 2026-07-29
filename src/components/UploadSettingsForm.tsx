@@ -13,6 +13,12 @@ const DEFAULT_SETTINGS: WorkspaceSettings = {
   screening_seconds: 30,
 };
 
+const UPLOAD_PROGRESS_STAGES = [
+  { percent: 20, label: "Preparing upload" },
+  { percent: 45, label: "Uploading files" },
+  { percent: 70, label: "Processing images" },
+] as const;
+
 export interface UploadValues {
   files: File[];
   providerKind: ProviderKind;
@@ -37,6 +43,8 @@ export function UploadSettingsForm({
   const [domainContext, setDomainContext] = useState<DomainContext>(active.domain_context);
   const [screeningSeconds, setScreeningSeconds] = useState(active.screening_seconds);
   const [useReviewModel, setUseReviewModel] = useState(active.use_review_model);
+  const [uploadProgress, setUploadProgress] = useState<(typeof UPLOAD_PROGRESS_STAGES)[number] | null>(null);
+  const [uploadPercent, setUploadPercent] = useState(0);
   const fileInput = useRef<HTMLInputElement>(null);
 
   function preferredProviderKind(kind: "uni" | "hibou"): ProviderKind {
@@ -52,6 +60,33 @@ export function UploadSettingsForm({
     setUseReviewModel(next.use_review_model);
     if (fileInput.current) fileInput.current.value = "";
   }, [settings, providers]);
+
+  useEffect(() => {
+    if (!busy) {
+      setUploadProgress(null);
+      setUploadPercent(0);
+      return;
+    }
+    setUploadProgress(UPLOAD_PROGRESS_STAGES[0]);
+    setUploadPercent(UPLOAD_PROGRESS_STAGES[0].percent);
+    let second: number | null = null;
+    const progressTimer = window.setInterval(() => {
+      setUploadPercent((current) => Math.min(92, current + 1));
+    }, 650);
+    const first = window.requestAnimationFrame(() => {
+      setUploadProgress(UPLOAD_PROGRESS_STAGES[1]);
+      setUploadPercent(UPLOAD_PROGRESS_STAGES[1].percent);
+      second = window.requestAnimationFrame(() => {
+        setUploadProgress(UPLOAD_PROGRESS_STAGES[2]);
+        setUploadPercent(UPLOAD_PROGRESS_STAGES[2].percent);
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(first);
+      if (second !== null) window.cancelAnimationFrame(second);
+      window.clearInterval(progressTimer);
+    };
+  }, [busy]);
 
   const selectedProvider = providerKind === "modal_uni" ? "uni" : providerKind === "modal_hibou" ? "hibou" : providerKind;
   const hasConfiguredEncoder = providers.uni.ready || providers.modal_uni.ready || providers.hibou.ready || providers.modal_hibou.ready;
@@ -167,6 +202,12 @@ export function UploadSettingsForm({
         <button className="primary" disabled={busy} type="submit">
           {busy ? "Processing files…" : "Process files"}
         </button>
+        {busy && uploadProgress && (
+          <div className="upload-progress" role="status" aria-label={`File processing progress: ${uploadPercent}%`}>
+            <div className="upload-progress-label"><span>{uploadProgress.label}</span><strong>{uploadPercent}%</strong></div>
+            <div className="upload-progress-track"><span style={{ width: `${uploadPercent}%` }} /></div>
+          </div>
+        )}
       </div>
     </form>
   );

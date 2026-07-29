@@ -2,21 +2,29 @@ import type { ReactNode } from "react";
 import type { OperationalMetrics, Priority } from "../types";
 
 export type ThemeName = "dark" | "light" | "sage";
-export type AccentName = "cyan" | "sage" | "violet";
+export type AccentName = "cyan" | "sage" | "violet" | "custom";
 
-export function Header({ onReset, theme, onThemeChange, accent, onAccentChange }: {
+export function Header({ onReset, theme, onThemeChange, accent, onAccentChange, customAccent, onCustomAccentChange }: {
   onReset: () => void;
   theme: ThemeName;
   onThemeChange: (theme: ThemeName) => void;
   accent: AccentName;
   onAccentChange: (accent: AccentName) => void;
+  customAccent: string;
+  onCustomAccentChange: (color: string) => void;
 }) {
   return (
     <header className="site-header">
-      <div className="brand">
-        <strong>PathologyAI</strong>
-        <small>Research/Education Prototype · Human Review Required</small>
-      </div>
+      <a className="brand app-brand" href="/" aria-label="PathologyAI home">
+        <svg className="app-logo" viewBox="0 0 34 34" aria-hidden="true">
+          <path d="M17 3.5 28.5 10v14L17 30.5 5.5 24V10L17 3.5Z" fill="none" stroke="currentColor" strokeWidth="1.4" />
+          <path d="M11 23V11h5.4c3.6 0 5.7 1.7 5.7 4.6s-2.1 4.6-5.7 4.6H13" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <span className="brand-copy">
+          <strong>PathologyAI</strong>
+          <small>Research/Education Prototype · Human Review Required</small>
+        </span>
+      </a>
       <div className="header-actions">
         <label className="theme-control">
           <span>Theme</span>
@@ -32,7 +40,17 @@ export function Header({ onReset, theme, onThemeChange, accent, onAccentChange }
             <option value="cyan">Cyan</option>
             <option value="sage">Sage</option>
             <option value="violet">Violet</option>
+            <option value="custom">Custom</option>
           </select>
+        </label>
+        <label className="theme-control custom-color-control">
+          <span>Pick color</span>
+          <input
+            aria-label="Custom accent color"
+            type="color"
+            value={customAccent}
+            onChange={(event) => onCustomAccentChange(event.target.value)}
+          />
         </label>
         <button type="button" onClick={onReset}>New batch</button>
         <a className="button" href="/api/export">Export reviewed CSV</a>

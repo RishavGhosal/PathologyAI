@@ -28,6 +28,20 @@ class RegionAnalysisTests(unittest.TestCase):
             self.assertGreaterEqual(region.y, 0)
             self.assertLessEqual(region.y + region.height, 1)
 
+    def test_edge_regions_are_removed_before_next_highest_region_is_selected(self) -> None:
+        values = np.zeros((12, 12), dtype=np.float32)
+        values[4:7, 0:3] = 1.0
+        values[4:7, 7:10] = 0.92
+
+        analysis = analyze_variation_map(
+            values,
+            source="fixture",
+            exclude_edge_regions=True,
+        )
+
+        self.assertEqual(len(analysis.regions), 1)
+        self.assertGreater(analysis.regions[0].x, 0.4)
+
     def test_rank_agreement_is_high_for_same_ranking_and_low_for_reverse(self) -> None:
         values = np.asarray([[0.1, 0.2], [0.8, 0.4]], dtype=np.float32)
         self.assertAlmostEqual(rank_agreement(values, values), 1.0)
